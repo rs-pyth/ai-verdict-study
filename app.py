@@ -51,6 +51,25 @@ ai_client = (
     OpenAI(
         base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
         api_key=GEMINI_API_KEY,
+        # The openai SDK retries automatically on 5xx by default
+        # (max_retries=2, i.e. up to 3 real requests per .create() call).
+        # Confirmed live (2026-09-17) that this was silently multiplying
+        # quota usage against Gemini's actual free-tier limits: the raw
+        # RateLimitError logged that day named
+        # GenerateRequestsPerMinutePerProjectPerModel-FreeTier, quotaValue
+        # 5 -- a PER-MINUTE cap, not the daily one we'd assumed since
+        # 2026-09-08's error (which really did say PerDay that time, with
+        # a different quotaId -- both limits are real, just distinct).
+        # Two "logical" calls from a pilot script both hit InternalServerError
+        # (503 model-overloaded) and were enough to blow through a 5/minute
+        # cap, which only makes sense if the SDK was silently resending
+        # each one 2-3x internally before surfacing the error. Disabling
+        # that here: our own RateLimitError/InternalServerError handlers
+        # already give participants a clean message and a manual retry
+        # button, so a human-paced retry is far less likely to rapid-fire
+        # multiple real requests within the same 60s window than the
+        # SDK's built-in backoff was.
+        max_retries=0,
     )
     if GEMINI_API_KEY
     else None
@@ -257,18 +276,26 @@ def api_generate_verdict():
         else:
             response = ai_client.chat.completions.create(**create_kwargs)
     except openai.RateLimitError as e:
-        # Originally confirmed live as the 20/day cap (not per-minute) --
-        # but RateLimitError (429) is the same exception class Gemini
-        # would also raise for a per-minute throttle, and this handler
-        # was unconditionally labeling every occurrence "daily_limit_reached"
-        # without ever looking at the actual message, so a per-minute hit
-        # would be indistinguishable from real daily exhaustion in the
-        # logs. Logging the raw error here (client-facing message/status
-        # unchanged) so a future occurrence can actually be told apart --
-        # prompted by two observed cases (2026-09-07, 2026-09-08) where a
-        # success was followed by a 429 only seconds to tens of seconds
-        # later, which is hard to square with a true daily cap.
-        app.logger.warning(f"RateLimitError on /api/generate-verdict: {e}")
+        # RateLimitError (429) covers two genuinely different Gemini
+        # quotas, confirmed live from the raw error's quotaId in each
+        # case: GenerateRequestsPerDayPerProjectPerModel-FreeTier
+        # (2026-09-08, limit 20 -- resolves next day) vs.
+        # GenerateRequestsPerMinutePerProjectPerModel-FreeTier
+        # (2026-09-17, limit 5 -- resolves within about a minute). This
+        # handler used to unconditionally tell participants "try again
+        # tomorrow" for both, which is actively wrong for the per-minute
+        # case. Distinguishing on the quotaId string in the raw message
+        # rather than guessing from timing.
+        error_text = str(e)
+        app.logger.warning(f"RateLimitError on /api/generate-verdict: {error_text}")
+        if "PerMinute" in error_text:
+            return jsonify({
+                "error": "rate_limited",
+                "message": (
+                    "The AI service is handling a lot of requests right now. "
+                    "Please wait about a minute and try again."
+                ),
+            }), 429
         return jsonify({
             "error": "daily_limit_reached",
             "message": (
