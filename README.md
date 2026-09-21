@@ -11,19 +11,23 @@ that one first — it's the part the whole study's validity depends on, and
 Most content in `config.py` is filled in — consent text, scenario, debrief,
 covariates, and all five DV scales. A few things still need a human, not code:
 
-- **Review `SCENARIO_FACTS_AGREE` and `SCENARIO_FACTS_DISAGREE`** in
-  `config.py` — drafted, not placeholders, but not vetted either. As of
-  the v2 verdict prompt, the AI genuinely audits the participant's
-  reasoning against whichever fact-set the random condition draw selects,
-  rather than being told what to conclude — so these two fact-sets ARE
-  the experimental manipulation now. They're split by which true facts
-  each includes (growth-case vs. risk-case), not by tone, per the comment
-  above them — read that comment, it spells out a real consequence: a
-  participant with genuinely good reasoning can still come back
-  "unsupported" if they cited a fact outside their assigned set. That's
-  fine for this study's actual question, but worth being explicit about
-  in any write-up. Run the blind-audit pilot described in the comment
-  above `AI_PROMPT_TEMPLATE` before real participants see this.
+- **Review `SCENARIO_FACTS_GROWTH` and `SCENARIO_FACTS_RISK`** in
+  `config.py` — drafted, not placeholders, but not vetted either. The AI
+  genuinely audits the participant's reasoning against whichever fact-set
+  the randomized condition and the participant's own stance select
+  (`agree` = the set that backs their stance, `disagree` = the set that
+  opposes it), rather than being told what to conclude — so these two
+  fact-sets ARE the experimental manipulation. They're split by which
+  true facts each includes (growth-case vs. risk-case), not by tone. Read
+  the comment above them: it explains why the stance is part of the
+  mapping (the first pilot showed the condition alone barely moved the
+  verdict) and spells out a real consequence — a participant with
+  genuinely good reasoning can still come back "unsupported" if they
+  cited a fact outside their assigned set. That's fine for this study's
+  actual question, but worth being explicit about in any write-up. Rows
+  collected before 2026-09-21 used the old condition-only mapping and
+  aren't comparable. Re-run the blind-audit pilot under the new mapping
+  before real participants see this.
 - **Have Ben review `AI_PROMPT_TEMPLATE`** in `config.py`, and the fact-set
   curation approach above, before either touches real participants.
 - **Flag the minors / parental-consent question to Ben.** The consent
@@ -144,6 +148,12 @@ your `.env` locally and in Render's environment variables for production.
   parsed. The condition and its timestamp are written to the DB
   immediately, in that same request, before anything participant-authored
   is stored.
+- **The stance is used after the draw, never before it.** At verdict time
+  (`/api/generate-verdict`) the stored condition plus the stored
+  pre-stance pick the fact-set (`scenario_facts_for_condition()` in
+  `app.py`). That keeps `condition` independent of stance by
+  construction, while making `condition` itself mean "audited against
+  facts that back / oppose what the participant said" for everyone.
 - **No PII**: participant IDs are random UUIDs generated in the browser
   (`static/js/app.js`) and never tied to a name/email. The server doesn't
   log IPs beyond Flask/Render's normal access logs.

@@ -192,13 +192,29 @@ def api_submit_stance():
 # --- Step 4: AI verdict (v2 — honest audit against a condition-selected
 # fact-set; see config.py's comment above AI_PROMPT_TEMPLATE) -------------
 
-def scenario_facts_for_condition(condition):
-    """The random condition draw (randomization.py, via the DB) selects
-    WHICH fact-set the participant's reasoning is audited against — that
-    selection is the actual experimental manipulation now, since the
-    model is never told what verdict to reach. Never derived from
-    anything participant-authored."""
-    return config.SCENARIO_FACTS_AGREE if condition == "agree" else config.SCENARIO_FACTS_DISAGREE
+def scenario_facts_for_condition(condition, pre_stance):
+    """Which fact-set the participant's reasoning is audited against — the
+    actual experimental manipulation, since the model is never told what
+    verdict to reach.
+
+    The condition is the randomized part and is already fixed before this
+    runs (drawn and stored in /api/submit-stance before any participant-
+    authored content is read; nothing here can influence it). The
+    participant's own pre-stance is used ONLY to implement that
+    already-assigned condition:
+      'agree'    -> the set that supports their stance
+      'disagree' -> the set that opposes it
+    "yes" is backed by the growth-case facts and "no" by the risk-case
+    facts. See the comment above SCENARIO_FACTS_GROWTH in config.py for
+    why the stance is part of the mapping."""
+    if condition not in ("agree", "disagree"):
+        raise ValueError(f"unexpected condition: {condition!r}")
+    if pre_stance not in ("yes", "no"):
+        raise ValueError(f"unexpected pre_stance: {pre_stance!r}")
+
+    supports = config.SCENARIO_FACTS_GROWTH if pre_stance == "yes" else config.SCENARIO_FACTS_RISK
+    opposes = config.SCENARIO_FACTS_RISK if pre_stance == "yes" else config.SCENARIO_FACTS_GROWTH
+    return supports if condition == "agree" else opposes
 
 
 def build_verdict_prompt(scenario_facts, participant_reasoning):
@@ -221,8 +237,10 @@ def api_generate_verdict():
     participant = db.get_participant(participant_id)
     if participant is None or participant["condition"] is None:
         return jsonify({"error": "no condition assigned for this participant"}), 400
+    if participant["pre_stance"] not in ("yes", "no"):
+        return jsonify({"error": "no stance recorded for this participant"}), 400
 
-    scenario_facts = scenario_facts_for_condition(participant["condition"])
+    scenario_facts = scenario_facts_for_condition(participant["condition"], participant["pre_stance"])
     prompt = build_verdict_prompt(
         scenario_facts=scenario_facts,
         participant_reasoning=participant["pre_rationale"],

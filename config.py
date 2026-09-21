@@ -106,11 +106,12 @@ Questions or concerns: {CONTACT_EMAIL}. Thank you again for your time — this s
 # rules alone. Re-pilot this version the same way before trusting it.
 #
 # The random condition draw (randomization.py) still exists and still
-# drives what the participant sees — but now it selects WHICH of two
-# fact-sets (below) the participant's reasoning gets audited against,
-# rather than instructing the model what to conclude. See
-# build_verdict_prompt() and api_generate_verdict() in app.py for the
-# selection logic.
+# drives what the participant sees — but now, together with the
+# participant's own pre-stance, it selects WHICH of two fact-sets (below)
+# the participant's reasoning gets audited against, rather than
+# instructing the model what to conclude. See
+# scenario_facts_for_condition(), build_verdict_prompt() and
+# api_generate_verdict() in app.py for the selection logic.
 #
 # {scenario_facts} and {participant_reasoning} are filled in by
 # build_verdict_prompt() in app.py.
@@ -209,36 +210,65 @@ REASONING (participant's own words):
 AI_TEMPERATURE = 0
 AI_MAX_TOKENS = 4096
 
-# Two fact-sets per scenario, one per randomized condition. condition
-# 'agree' -> SCENARIO_FACTS_AGREE, 'disagree' -> SCENARIO_FACTS_DISAGREE
-# (see api_generate_verdict() in app.py). This is the actual experimental
-# manipulation now — the model genuinely audits, so the fact-set shown is
-# what steers the verdict, not an instruction to fake it.
+# Two fact-sets per scenario, named by what they contain, NOT by the
+# condition they used to be tied to. Which one a participant is audited
+# against is decided by (randomized condition, the participant's own
+# pre-stance) — see scenario_facts_for_condition() in app.py:
+#   condition 'agree'    -> the set that SUPPORTS their stance
+#                           (stance yes -> GROWTH, stance no -> RISK)
+#   condition 'disagree' -> the set that OPPOSES their stance
+#                           (stance yes -> RISK,   stance no -> GROWTH)
+#
+# Why the stance is in the mapping (2026-09-21): the original mapping tied
+# 'agree' to the growth set and 'disagree' to the risk set regardless of
+# stance. The 60-row pilot export showed that made `condition` nearly
+# meaningless on its own: for substantive rationales the verdict was
+# "supported" 46% of the time under agree vs 50% under disagree, because
+# what actually drove the verdict was whether the facts a participant
+# cited fell inside their assigned set — and people answering "yes" cite
+# growth facts while people answering "no" cite risk facts (agree+yes 5/6
+# supported, disagree+no 5/6, agree+no 1/7, disagree+yes 1/6). With the
+# stance in the mapping, 'agree' means "audited against facts that back
+# what you said" for everyone, so condition IS the manipulation.
+#
+# This does NOT touch the randomization's independence: the condition is
+# still drawn (randomization.py, zero inputs) and stored before anything
+# participant-authored is read, in /api/submit-stance. The stance is only
+# consulted later, at verdict time, to implement a condition that was
+# already assigned — condition is independent of stance by construction,
+# and the stance never influences which condition was drawn.
+#
+# This is the actual experimental manipulation — the model genuinely
+# audits, so the fact-set shown is what steers the verdict, not an
+# instruction to fake it.
 #
 # DRAFT — needs your and Ben's review before real participants see it,
 # same as the prompt itself. Every line below is true per SCENARIO_TEXT;
 # nothing is invented or altered. The two sets differ only in WHICH true
-# facts are included: AGREE gets the growth-case facts (stock price, the
-# contract win, the CEO's forward-looking quote), DISAGREE gets the
-# risk-case facts (core-business underperformance vs. industry benchmark,
-# revenue concentration, the same CEO quote — now relevant as continued
-# reliance on that concentration). Rule 1 in the prompt above means
-# whatever's NOT in a given set effectively doesn't exist to that audit —
-# that's the actual lever making this work, not fabrication, but it has a
-# real consequence worth being explicit about: a participant who reasons
-# well but cites facts outside their assigned set (e.g. an astute "no"
-# grounded in concentration risk, audited against the AGREE set that
-# omits it) can come back "unsupported" for reasons that have nothing to
-# do with whether their reasoning was actually good. That's expected and
-# fine for THIS study's actual question (does disagreement suppress
-# trust regardless of merit?) — it would NOT be fine if you ever wanted
-# "supported/unsupported" to double as a genuine reasoning-quality
-# measure. Worth being explicit about that distinction in your write-up.
-SCENARIO_FACTS_AGREE = """- TechFlow Inc.'s stock price has risen 40% over the past year.
+# facts are included: GROWTH has the growth-case facts (stock price, the
+# contract win, the CEO's forward-looking quote), RISK has the risk-case
+# facts (core-business underperformance vs. industry benchmark, revenue
+# concentration, the same CEO quote — now relevant as continued reliance
+# on that concentration). Rule 1 in the prompt above means whatever's NOT
+# in a given set effectively doesn't exist to that audit — that's the
+# actual lever making this work, not fabrication. Two consequences worth
+# being explicit about in your write-up:
+#   1. A participant who reasons well but cites facts outside their
+#      assigned set (e.g. a "yes" who leans on the concentration risk,
+#      even under 'agree', which audits them against GROWTH) can still
+#      come back "unsupported" for reasons unrelated to reasoning quality.
+#      So 'agree' raises the chance of "supported" a lot but doesn't
+#      guarantee it. Fine for THIS study's question (does disagreement
+#      suppress trust regardless of merit?); NOT fine if you ever wanted
+#      "supported/unsupported" to double as a reasoning-quality measure.
+#   2. Rows collected before this change (recruitment_source
+#      'pilot-audit-batch-3', all pre-2026-09-21 deploys) used the old
+#      mapping and are not comparable with anything collected after it.
+SCENARIO_FACTS_GROWTH = """- TechFlow Inc.'s stock price has risen 40% over the past year.
 - TechFlow signed a large government contract 8 months ago, which now accounts for 35% of TechFlow's total revenue this year.
 - TechFlow's CEO stated in an earnings call that the company is "exploring additional government partnerships to build on this momentum.\""""
 
-SCENARIO_FACTS_DISAGREE = """- TechFlow's core subscription business (its original product line) grew only 3% over the past year, compared with an industry average growth rate of 12% for comparable subscription businesses.
+SCENARIO_FACTS_RISK = """- TechFlow's core subscription business (its original product line) grew only 3% over the past year, compared with an industry average growth rate of 12% for comparable subscription businesses.
 - Almost all of TechFlow's revenue growth this year has come from one large government contract signed 8 months ago, which now accounts for 35% of TechFlow's total revenue this year.
 - TechFlow's CEO stated in an earnings call that the company is "exploring additional government partnerships to build on this momentum.\""""
 
