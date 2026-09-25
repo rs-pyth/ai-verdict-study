@@ -88,6 +88,13 @@
       </div>
     </fieldset>
 
+    <fieldset>
+      <legend>{{ gender_question }}</legend>
+      {% for code, label in gender_options %}
+      <label class="radio-line"><input type="radio" name="gender" value="{{ code }}" required> {{ label }}</label>
+      {% endfor %}
+    </fieldset>
+
     <label class="field-line">
       Age
       <input type="number" id="age" min="1" max="120" required>

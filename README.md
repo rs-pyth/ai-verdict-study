@@ -51,7 +51,7 @@ For your write-up, not enforced anywhere in code:
 | Exploratory: does disagreement reduce advice-uptake | DV3 — stance-switch rate (`pre_stance` vs. `post_stance`) and confidence delta (`pre_confidence` vs. `post_confidence`), broken out by `condition`. Not asked directly — compute from the CSV export. |
 | Exploratory: disagreement → perceived competence, independent of trust | DV2 |
 | Exploratory: downstream behavioral intent | DV5 |
-| Moderator check | Covariates (financial literacy, prior AI use, tech affinity) as moderators of condition → trust |
+| Moderator check | Covariates (financial literacy, prior AI use, tech affinity) as moderators of condition → trust. Gender (`gender`: woman / man / nonbinary / another / prefer_not_to_say) is collected the same way; with small samples the sparse categories will have very few rows, so decide how to collapse them before looking at results. Rows collected before this question was added have `gender` NULL. |
 
 Scoring notes live as comments right above `TRUST_ITEMS` and `BIAS_ITEMS`
 in `config.py` (which items are reverse-scored, which item to

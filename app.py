@@ -114,6 +114,8 @@ def index():
         ai_use_labels=config.AI_USE_LABELS,
         tech_affinity_items=config.TECH_AFFINITY_ITEMS,
         fin_lit_questions=config.FIN_LIT_QUESTIONS,
+        gender_question=config.GENDER_QUESTION,
+        gender_options=config.GENDER_OPTIONS,
         trust_instructions=config.TRUST_INSTRUCTIONS,
         trust_items=config.TRUST_ITEMS,
         competence_items=config.COMPETENCE_ITEMS,
@@ -139,6 +141,10 @@ def api_consent():
 @app.route("/api/covariates", methods=["POST"])
 def api_covariates():
     data = request.get_json()
+    # Closed list: reject anything the form couldn't have produced instead
+    # of storing it. (A missing value is rejected too -- the UI requires it.)
+    if data.get("gender") not in {code for code, _ in config.GENDER_OPTIONS}:
+        return jsonify({"error": "invalid gender"}), 400
     db.save_covariates(
         participant_id=data["participant_id"],
         ai_use_frequency=data["ai_use_frequency"],
@@ -147,6 +153,7 @@ def api_covariates():
         fin_lit_self_rating=data["fin_lit_self_rating"],
         age=data["age"],
         grade_year=data["grade_year"],
+        gender=data["gender"],
     )
     return jsonify({"ok": True})
 

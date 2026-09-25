@@ -124,6 +124,7 @@ document.addEventListener("DOMContentLoaded", () => {
       getRadioValue(`fin_lit_${i}`)
     );
     const finLitSelf = getRadioValue("fin_lit_self_rating");
+    const gender = getRadioValue("gender");
     const age = document.getElementById("age").value;
     const gradeYear = document.getElementById("grade_year").value.trim();
 
@@ -132,6 +133,7 @@ document.addEventListener("DOMContentLoaded", () => {
       techAffinity.includes(null) ||
       finLitAnswers.includes(null) ||
       !finLitSelf ||
+      !gender ||
       !age ||
       !gradeYear
     ) {
@@ -161,6 +163,7 @@ document.addEventListener("DOMContentLoaded", () => {
       fin_lit_self_rating: parseInt(finLitSelf, 10),
       age: parseInt(age, 10),
       grade_year: gradeYear,
+      gender,
     });
     showStep("step-2");
   });

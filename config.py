@@ -283,6 +283,25 @@ TECH_AFFINITY_ITEMS = [
     "I feel confident using unfamiliar digital tools.",
 ]
 
+# Gender, asked in Step 1 alongside age/grade. Stored as the short code
+# (first element), shown as the label (second). Closed list on purpose —
+# no free text — so the column stays analyzable and holds no stray
+# personal detail. "Prefer not to say" is a real option (not a skip), so
+# the question can stay required in the UI without forcing disclosure,
+# which is what the consent text promises ("you may skip any question").
+# /api/covariates rejects any value not in this list. With small samples
+# the sparse categories (nonbinary / another / prefer_not_to_say) will
+# have very few rows: pre-decide how to collapse them before analysis
+# rather than after seeing results.
+GENDER_QUESTION = "What is your gender?"
+GENDER_OPTIONS = [
+    ("woman", "Woman"),
+    ("man", "Man"),
+    ("nonbinary", "Non-binary"),
+    ("another", "Another gender not listed"),
+    ("prefer_not_to_say", "Prefer not to say"),
+]
+
 # The standard "Big Three" financial literacy items (Lusardi & Mitchell):
 # compound interest, risk diversification, inflation. Each has a single
 # correct option index (0-based) into its own `options` list.

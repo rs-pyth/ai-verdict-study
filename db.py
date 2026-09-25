@@ -57,6 +57,8 @@ CREATE TABLE IF NOT EXISTS participants (
     fin_lit_self_rating INTEGER,       -- 1-7 self-rated investing knowledge
     age INTEGER,
     grade_year TEXT,                   -- free text, e.g. "11th grade"
+    gender TEXT,                       -- code from config.GENDER_OPTIONS (woman/man/nonbinary/another/prefer_not_to_say);
+                                        -- NULL on rows collected before this question existed
 
     -- Step 2: scenario + initial stance (participant-authored content)
     pre_stance TEXT,                   -- 'yes' / 'no'
@@ -119,6 +121,7 @@ CREATE TABLE IF NOT EXISTS participants (
 # other failure still surfaces normally rather than being swallowed.
 MIGRATIONS = [
     "ALTER TABLE participants ADD COLUMN attention_check_response INTEGER",
+    "ALTER TABLE participants ADD COLUMN gender TEXT",
 ]
 
 
@@ -207,7 +210,7 @@ def save_consent(participant_id, recruitment_source, timestamp):
 
 
 def save_covariates(participant_id, ai_use_frequency, tech_affinity,
-                     fin_lit_correct, fin_lit_self_rating, age, grade_year):
+                     fin_lit_correct, fin_lit_self_rating, age, grade_year, gender):
     """tech_affinity: list of 3 ints. fin_lit_correct: list of 3 bools."""
     with get_db() as conn:
         conn.execute(
@@ -218,7 +221,8 @@ def save_covariates(participant_id, ai_use_frequency, tech_affinity,
                 fin_lit_q1_correct = ?, fin_lit_q2_correct = ?, fin_lit_q3_correct = ?,
                 fin_lit_self_rating = ?,
                 age = ?,
-                grade_year = ?
+                grade_year = ?,
+                gender = ?
             WHERE id = ?
             """,
             (
@@ -228,6 +232,7 @@ def save_covariates(participant_id, ai_use_frequency, tech_affinity,
                 fin_lit_self_rating,
                 age,
                 grade_year,
+                gender,
                 participant_id,
             ),
         )
