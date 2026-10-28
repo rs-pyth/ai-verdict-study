@@ -22,11 +22,11 @@ Thank you for considering taking part in this research study, conducted independ
 
 What you'll do: You'll read a short, hypothetical investment scenario, state whether you'd make the investment and explain your reasoning, then receive a response from an AI tool. Afterward, you'll answer some questions about your reaction to that response and restate your decision. The whole thing takes about 8–10 minutes.
 
-What's being studied: This study is not evaluating you, your intelligence, or the quality of your investment reasoning. It is studying how people's trust in an AI system is affected by whether that system agrees or disagrees with them. Full details will be shared with you after you complete the study, since knowing them in advance would affect the results.
+Information withheld until the end: To study people's natural reactions, this study does not describe some aspects of itself, including its exact purpose and how the AI tool's response is produced, until after you have finished. This is deliberate and necessary for the study to work. As soon as you finish, you will be given a full explanation, and you will be able to ask for your data to be deleted if you would rather not have it included.
 
 Your data: Your responses are anonymous — we do not collect your name or contact information. A random ID is assigned to your responses for research purposes only. Data will be used for a student research project and may be shared publicly in aggregate, anonymized form (e.g., in a write-up or presentation); no individual's identity will ever be connected to their responses.
 
-Risks: This study involves a hypothetical scenario, not real money or real decisions, so there is no financial risk. Some participants may find AI feedback that disagrees with their reasoning mildly uncomfortable; there is no other anticipated risk.
+Risks: This study involves a hypothetical scenario, not real money or real decisions, so there is no financial risk. Some participants may find the AI's feedback on their reasoning mildly uncomfortable; there is no other anticipated risk.
 
 Your rights: Participation is completely voluntary. You may stop at any point without penalty, and you may skip any question you're not comfortable answering. There is no compensation for participating.
 
@@ -73,7 +73,7 @@ The AI's response to your reasoning was not a genuine assessment of it. After yo
 
 Why the deception was necessary: If you had known in advance that the AI's agreement or contradiction was assigned at random, it likely would have changed how much you trusted or engaged with its response — which would have made it impossible to measure what we're actually studying.
 
-What we're studying: A common finding in behavioral research is that people trust AI tools more when the AI agrees with them, and less when it disagrees — even when the AI's disagreement might be the more useful, accurate signal. This matters because tools designed to catch flawed reasoning (like the one this study is modeled on) only work if people actually listen when the tool pushes back. We're testing whether that trust gap shows up here, and whether it's specific to disagreement itself rather than to the quality of the AI's reasoning.
+What we're studying: This study was not evaluating you, your intelligence, or the quality of your investment reasoning. It was studying how people's trust in an AI system is affected by whether that system agrees or disagrees with them. A common finding in behavioral research is that people trust AI tools more when the AI agrees with them, and less when it disagrees — even when the AI's disagreement might be the more useful, accurate signal. This matters because tools designed to catch flawed reasoning (like the one this study is modeled on) only work if people actually listen when the tool pushes back. We're testing whether that trust gap shows up here, and whether it's specific to disagreement itself rather than to the quality of the AI's reasoning.
 
 Your data: Your responses remain anonymous and will be used only for this research. If you'd like to withdraw your data now that you know the full purpose, contact {CONTACT_EMAIL} with your participant ID (shown below) within {WITHDRAWAL_WINDOW}, and it will be deleted.
 
