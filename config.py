@@ -101,7 +101,9 @@ Questions or concerns: {CONTACT_EMAIL}. Thank you again for your time — this s
 # cite in either direction. The verdict itself no longer depends on it.
 #
 # APPROVED by the researcher on 2026-10-28 (this is the stimulus-generating
-# instruction). Verdicts are written live by the model, not drawn from a
+# instruction). Rule 8 (never say a fact is missing / 'provided') and the matching
+# rewrite of worked example 2 were added at the researcher's request the same
+# day after the live soak test showed 'No provided fact states ...' wording. Verdicts are written live by the model, not drawn from a
 # pre-generated bank; any change to this text needs fresh sign-off and is a
 # change to the pre-registered stimulus.
 #
@@ -123,6 +125,7 @@ Rules, in order of priority:
 5. Length: between {min_words} and {max_words} words in total across the 4 sentences, for BOTH verdicts. Match tone, sentence length, and vocabulary across both verdicts as closely as possible.
 6. Do not use intensifiers or affect-laden words that do not appear in FACTS or REASONING (for example "alarming," "reassuring," "risky," "solid," "concerning," "impressive," "genuine," "substantial," "deliberate"). Stay descriptive and factual.
 7. The explanation is plain text: no markdown, no bullet points, no headers, no line breaks.
+8. Never say or hint that a fact is missing, absent, "not provided", "not stated" or "not mentioned", and never describe the facts as "provided", "given" or "listed". Do not write phrases such as "no fact states", "the facts do not mention" or "there is no information about". For a "not_supported" verdict, say what the facts DO state and that it points away from the participant's reasoning.
 
 OUTPUT FORMAT: respond with ONLY a JSON object, with nothing before or after it, in exactly this shape. The "verdict" value must be exactly the VERDICT TO REPORT above, and "prose" must be the 4 sentences.
 {{"verdict": "supported" or "not_supported", "prose": "..."}}
@@ -141,7 +144,7 @@ OUTPUT: {{"verdict": "supported", "prose": "The participant's reasoning is suppo
 
 REASONING: "I'd invest because the company just added two new product lines that will drive growth."
 VERDICT TO REPORT: not_supported
-OUTPUT: {{"verdict": "not_supported", "prose": "The participant's reasoning is not supported by the facts. The facts state that Meridian added two new product lines this year, which together account for 8% of total revenue, and that the CEO described a focus on stabilizing existing operations before pursuing new products. The facts also state that Meridian's stock price fell 12% over the past year and that its flagship product line was discontinued six months ago. No fact states that the new product lines will drive growth or raise the stock price, so the participant's reasoning is not supported by the facts."}}
+OUTPUT: {{"verdict": "not_supported", "prose": "The participant's reasoning is not supported by the facts. The facts state that Meridian's stock price fell 12% over the past year and that its flagship product line was discontinued six months ago. The facts also state that the two new product lines added this year together account for 8% of total revenue, and that the CEO described a focus on stabilizing existing operations before pursuing new products. These facts point away from the participant's expectation that the new product lines will drive growth, so the reasoning is not supported by the facts."}}
 
 Now do the same for the real task below.
 
@@ -198,9 +201,9 @@ TARGET_VERDICT = {"agree": "supported", "contradict": "not_supported"}
 # `python check_fallbacks.py` to validate them before launch.
 FALLBACK_VERDICTS = {
     ('yes', 'agree'): "The participant's reasoning is supported by the facts. TechFlow Inc.'s stock price has risen 40% over the past year, and a large government contract signed 8 months ago now accounts for 35% of its total revenue this year. The CEO stated in an earnings call that the company is \"exploring additional government partnerships to build on this momentum.\" These facts are consistent with a decision to invest, because they describe the stock price, the contract and the CEO's stated plan, so the reasoning is supported by the facts.",
-    ('yes', 'contradict'): "The participant's reasoning is not supported by the facts. TechFlow's core subscription business grew only 3% over the past year, compared with an industry average growth rate of 12% for comparable subscription businesses. Almost all of TechFlow's revenue growth this year has come from one large government contract signed 8 months ago, which now accounts for 35% of its total revenue this year. No fact states that this growth will continue without that contract, and no fact describes growth in the original product line beyond 3%, so the reasoning is not supported by the facts.",
-    ('no', 'agree'): "The participant's reasoning is supported by the facts. TechFlow's core subscription business grew only 3% over the past year, compared with an industry average growth rate of 12% for comparable subscription businesses. Almost all of TechFlow's revenue growth this year has come from one large government contract signed 8 months ago, which now accounts for 35% of its total revenue this year. These facts are consistent with a decision not to invest, and they describe no growth outside that one contract beyond the 3% in the original product line, so the reasoning is supported by the facts.",
-    ('no', 'contradict'): "The participant's reasoning is not supported by the facts. TechFlow Inc.'s stock price has risen 40% over the past year, and a large government contract signed 8 months ago now accounts for 35% of its total revenue this year. The CEO stated in an earnings call that the company is \"exploring additional government partnerships to build on this momentum.\" These facts do not point toward a decision against investing, because they describe the stock price, the contract and the CEO's stated plan, so the reasoning is not supported by the facts.",
+    ('yes', 'contradict'): "The participant's reasoning is not supported by the facts. TechFlow's core subscription business grew only 3% over the past year, compared with an industry average growth rate of 12% for comparable subscription businesses. Almost all of TechFlow's revenue growth this year has come from one large government contract signed 8 months ago, which now accounts for 35% of its total revenue. These facts run against a decision to invest, because they describe below-industry growth in the original product line and revenue growth that comes almost entirely from one contract, so the reasoning is not supported by the facts.",
+    ('no', 'agree'): "The participant's reasoning is supported by the facts. TechFlow's core subscription business grew only 3% over the past year, compared with an industry average growth rate of 12% for comparable subscription businesses. Almost all of TechFlow's revenue growth this year has come from one large government contract signed 8 months ago, which now accounts for 35% of its total revenue. These facts are consistent with a decision not to invest, because they describe below-industry growth in the original product line and revenue growth that comes almost entirely from one contract, so the reasoning is supported by the facts.",
+    ('no', 'contradict'): "The participant's reasoning is not supported by the facts. TechFlow Inc.'s stock price has risen 40% over the past year, and a large government contract signed 8 months ago now accounts for 35% of its total revenue this year. The CEO stated in an earnings call that the company is \"exploring additional government partnerships to build on this momentum.\" These facts run against a decision not to invest, because they describe the stock price, the contract and the CEO's stated plan, so the reasoning is not supported by the facts.",
 }
 
 # Two fact-sets per scenario, named by what they contain, NOT by the

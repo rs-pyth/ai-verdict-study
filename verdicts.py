@@ -190,6 +190,11 @@ def run_loop(*, target, build_prompt, call_model, max_attempts, budget_s, temper
     }
 
 
+# Wording the prompt forbids (rule 8): fallbacks are held to the same rule.
+FORBIDDEN_PHRASES = ("no fact", "not provided", "provided fact", "not stated", "not mentioned",
+                     "do not mention", "does not mention", "no information", "the facts provided", "given fact")
+
+
 def validate_fallbacks(fallbacks, mapping, word_min, word_max):
     """Problems with the stored fallback texts, as a list of strings (empty = OK)."""
     problems = []
@@ -206,6 +211,9 @@ def validate_fallbacks(fallbacks, mapping, word_min, word_max):
             problems.append(f"{name}: {n} words, needs {word_min}-{word_max}")
         if "\n" in text:
             problems.append(f"{name}: contains line breaks")
+        hits = [ph for ph in FORBIDDEN_PHRASES if ph in text.lower()]
+        if hits:
+            problems.append(f"{name}: uses wording the prompt forbids (a fact being missing/'provided'): {hits}")
     if len({t for t in fallbacks.values() if t}) < len([t for t in fallbacks.values() if t]):
         problems.append("two fallbacks are identical")
     return problems

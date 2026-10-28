@@ -345,6 +345,24 @@ def test_attempt_log_is_append_only():
     print("PASS: verdict_attempts rows cannot be edited after the fact.")
 
 
+def test_fallbacks_are_held_to_the_no_missing_fact_rule():
+    good = prose(S, 90)
+    for bad_text in (good.replace("word2 ", "no fact states ", 1), good.replace("word2 ", "not provided ", 1),
+                     good.replace("word2 ", "No provided fact ", 1)):
+        problems = verdicts.validate_fallbacks({("yes", "agree"): bad_text}, config.TARGET_VERDICT, 80, 100)
+        assert any("forbids" in p for p in problems), (bad_text[:80], problems)
+    assert not any("forbids" in p for p in verdicts.validate_fallbacks({("yes", "agree"): good}, config.TARGET_VERDICT, 80, 100))
+    print("PASS: fallbacks using 'no fact states' / 'not provided' wording are rejected by the validator.")
+
+
+def test_prompt_carries_rule_8_and_examples_obey_it():
+    p = A.build_verdict_prompt("- a fact", "my reasoning", "not_supported")
+    assert "8. Never say or hint that a fact is missing" in p
+    examples = p.split("EXAMPLES")[1].split("Now do the same")[0].lower()
+    assert not any(ph in examples for ph in verdicts.FORBIDDEN_PHRASES), "a worked example breaks rule 8"
+    print("PASS: the built prompt contains rule 8 and its worked examples avoid the forbidden wording.")
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_") and callable(fn):

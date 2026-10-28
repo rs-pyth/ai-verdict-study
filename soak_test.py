@@ -139,6 +139,22 @@ def summarize(base, password, results):
         print(f"{p['pre_stance']:6} {p['condition']:10} {p['verdict_target']:14} {p['verdict_attempts']:5} "
               f"{'YES' if fb else 'no':9} {p['verdict_fallback_reason']:20} {p['verdict_api_error_count']:6} {w if w else '':5}")
 
+    missing = [r["pid"] for r in results if r["pid"] in raw and not raw[r["pid"]]["ai_verdict_text"]]
+    if missing:
+        print("\n=== Participants with NO stored verdict (what the server logged for each) ===")
+        for pid in missing:
+            p = raw[pid]
+            print(f"{pid}: stance={p['pre_stance']} condition={p['condition']} "
+                  f"stance_recorded={p['stance_recorded_at']} verdict_requested={p['verdict_requested_at'] or 'NEVER'} "
+                  f"created={p['created_at']}")
+            mine = [a for a in attempts if a["participant_id"] == pid]
+            if not mine:
+                print("   no model calls were logged: the verdict request either never reached the model "
+                      "(never sent, or failed before the first call) or was cut off before the first call finished")
+            for a in mine:
+                print(f"   call {a['seq']}: {a['kind']} outcome={a['outcome']} error={a['error_kind'] or '-'} "
+                      f"latency={a['latency_ms']}ms {a['error_detail'][:140]}")
+
     gens = [a for a in attempts if a["kind"] == "generation"]
     by_outcome = {}
     for a in gens:
@@ -167,10 +183,24 @@ def main():
     ap.add_argument("--n", type=int, default=4, help="participants to run (default 4)")
     ap.add_argument("--pause", type=float, default=15, help="seconds between participants (default 15)")
     ap.add_argument("--yes", action="store_true", help="skip the quota confirmation")
+    ap.add_argument("--summarize-only", action="store_true",
+                    help="run nothing: summarise the soak participants ('test-soak-...') already on the server "
+                         "(needs ADMIN_EXPORT_PASSWORD only, uses no model quota)")
     a = ap.parse_args()
     base = a.base_url.rstrip("/")
     token = os.environ.get("TEST_MODE_TOKEN")
     password = os.environ.get("ADMIN_EXPORT_PASSWORD")
+    if a.summarize_only:
+        if not password:
+            sys.exit("Set ADMIN_EXPORT_PASSWORD in your environment.")
+        try:
+            rows = [p for p in fetch_csv(base, password, "&format=raw&include_test=1") if p["id"].startswith("test-soak-")]
+        except Exception as e:
+            sys.exit(f"Could not download results: {e}")
+        if not rows:
+            sys.exit("No test-soak participants found on the server.")
+        summarize(base, password, [{"pid": p["id"], "stance": p["pre_stance"]} for p in rows])
+        return
     if not token:
         sys.exit("Set TEST_MODE_TOKEN in your environment (the value you put on Render).")
     if a.n < 1 or a.n > 20:
