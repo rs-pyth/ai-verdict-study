@@ -170,6 +170,21 @@ playwright install chromium` (Render installs `requirements.txt` only). It
 makes the test server answer slowly so the 2nd/3rd click land while the first
 request is in flight, then checks the database itself: one slot, one condition.
 
+## Soak test (live verdict behaviour)
+
+`soak_test.py` runs flagged test participants through a running server and
+summarises match rate, retries, fallbacks, word counts and the model name the
+API reported. Secrets come from your environment only:
+
+```bash
+TEST_MODE_TOKEN=... ADMIN_EXPORT_PASSWORD=... python soak_test.py --n 4
+```
+
+It uses real Gemini quota (1-3 calls per participant; free tier is 5/min and
+20/day), so the default is 4 participants 15 s apart. The rows are test rows:
+delete them with `cleanup_synthetic_rows.sql` before launch.
+`/admin/export?format=attempts` is the per-call verdict log it reads.
+
 ## Storage: why Turso, not just a local file
 
 Render's free tier (and most free hosts) has no persistent disk — local

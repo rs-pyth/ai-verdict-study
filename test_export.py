@@ -131,9 +131,17 @@ def test_route_end_to_end():
     assert {y["participant_id"]: y["is_test"] for y in both} == {real: "0", "test-ex-1": "1"}
     raw = client.get("/admin/export?password=pw&format=raw").get_data(as_text=True)
     assert "pre_rationale" in raw.splitlines()[0] and "pre_rationale" not in ",".join(analysis.COLUMNS)
+    with db.get_db() as conn:
+        conn.execute("INSERT INTO verdict_attempts (participant_id, seq, kind, generation_no, outcome, verdict_field, "
+                     "prose, word_count, model, temperature, latency_ms, created_at) VALUES (?,1,'generation',1,'match','supported','p',90,'m-1',0,5,'t')", (real,))
+        conn.execute("INSERT INTO verdict_attempts (participant_id, seq, kind, generation_no, outcome, created_at) VALUES ('test-ex-1',1,'api_error',NULL,'api_error','t')")
+    att = list(csv.DictReader(io.StringIO(client.get("/admin/export?password=pw&format=attempts").get_data(as_text=True))))
+    assert [(x["participant_id"], x["model"], x["word_count"]) for x in att] == [(real, "m-1", "90")], att
+    att2 = list(csv.DictReader(io.StringIO(client.get("/admin/export?password=pw&format=attempts&include_test=1").get_data(as_text=True))))
+    assert len(att2) == 2 and client.get("/admin/export?format=attempts").status_code == 401
     assert client.post("/admin/cleanup?password=pw").status_code in (404, 405), "temporary cleanup route must be gone"
     print("PASS: /admin/export = analysis columns, real rows only by default; include_test adds the flagged row; "
-          "format=raw gives the full table; /admin/cleanup no longer exists.")
+          "format=raw gives the full table; format=attempts the per-call log; /admin/cleanup no longer exists.")
 
 
 if __name__ == "__main__":

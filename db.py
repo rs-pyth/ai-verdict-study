@@ -653,3 +653,19 @@ def all_participants(include_test=False):
     with get_db() as conn:
         cur = conn.execute(f"SELECT * FROM participants {where} ORDER BY created_at")
         return [_row_to_dict(cur, row) for row in cur.fetchall()]
+
+
+def verdict_attempt_columns():
+    with get_db() as conn:
+        return [row[1] for row in conn.execute("PRAGMA table_info(verdict_attempts)").fetchall()]
+
+
+def all_verdict_attempts(include_test=False):
+    """Every logged model call (generations and API errors), joined to its
+    participant so the same real-only default applies as for the main export."""
+    where = "" if include_test else "WHERE p.is_test = 0"
+    with get_db() as conn:
+        cur = conn.execute(
+            f"SELECT a.* FROM verdict_attempts a JOIN participants p ON p.id = a.participant_id "
+            f"{where} ORDER BY a.participant_id, a.seq")
+        return [_row_to_dict(cur, row) for row in cur.fetchall()]

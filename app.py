@@ -491,23 +491,33 @@ def admin_export():
     documents every column). Real participants only by default;
     ?include_test=1 adds test rows and legacy (unflagged) rows, told apart by
     the is_test column. ?format=raw gives the full database table instead
-    (every stored column, including free text) for auditing."""
+    (every stored column, including free text) for auditing; ?format=attempts is
+    the per-call verdict log."""
     supplied = request.args.get("password", "")
     if not ADMIN_EXPORT_PASSWORD or not secrets.compare_digest(supplied, ADMIN_EXPORT_PASSWORD):
         return "Unauthorized", 401
 
-    rows = db.all_participants(include_test=request.args.get("include_test") == "1")
+    include_test = request.args.get("include_test") == "1"
+    if request.args.get("format") == "attempts":
+        # One row per model call (generations AND API errors): outcome, the verdict
+        # field returned, word count, the model name the API reported, latency.
+        columns, out_rows, filename = db.verdict_attempt_columns(), db.all_verdict_attempts(include_test), "verdict_attempts.csv"
+        return _csv_response(columns, out_rows, filename)
+    rows = db.all_participants(include_test=include_test)
     if request.args.get("format") == "raw":
         columns, out_rows, filename = db.column_names(), rows, "study_raw_export.csv"
     else:
         columns, out_rows, filename = analysis.COLUMNS, [analysis.analysis_row(r) for r in rows], "study_analysis.csv"
 
+    return _csv_response(columns, out_rows, filename)
+
+
+def _csv_response(columns, out_rows, filename):
     buffer = io.StringIO()
     writer = csv.DictWriter(buffer, fieldnames=columns)
     writer.writeheader()
     for row in out_rows:
         writer.writerow({col: row[col] for col in columns})
-
     return Response(
         buffer.getvalue(),
         mimetype="text/csv",
