@@ -80,109 +80,67 @@ Your participant ID: {{{{PARTICIPANT_ID}}}}
 
 Questions or concerns: {CONTACT_EMAIL}. Thank you again for your time — this study wouldn't be possible without you."""
 
-# --- Step 4: AI verdict prompt (v2.1 — honest audit, no scripted verdict) -
+# --- Step 4: AI verdict prompt (v3 — told the target, verified afterwards) ---
 #
-# This replaced an earlier version where the model was directly instructed
-# to output an AGREE or DISAGREE verdict regardless of reasoning quality.
-# This version never sees "agree"/"disagree" at all — it only sees
-# SCENARIO_FACTS and the participant's own REASONING, and is told to
-# genuinely audit whether the reasoning is "supported" or "unsupported"
-# by those facts, at temperature 0, in a fixed 4-sentence structure so
-# neither verdict type is longer or more dramatic than the other.
+# v2.1 (see git history) never told the model which verdict to give: it
+# audited the participant's reasoning against a fact-set and the direction
+# fell out of that. Measured against the assigned condition under the
+# stance-aware mapping it matched only ~77% of the time, with the misses
+# concentrated in vague rationales ("Too risky.", "No."), which would have
+# attenuated the manipulation. v3 TELLS the model the verdict to report
+# ("VERDICT TO REPORT"), asks for a JSON object {"verdict", "prose"}, and
+# verdicts.py then checks the returned `verdict` field against the assigned
+# condition -- regenerating up to MAX_VERDICT_ATTEMPTS times, then serving a
+# stored fallback and logging that it did. Temperature stays 0 on purpose:
+# no sampling randomness in the wording.
 #
-# v2.1 revision note: the first real pilot run (against placeholder FACTS,
-# so the model fell back on details from the participant's own REASONING)
-# surfaced three failure modes the v2 prompt didn't prevent: the model
-# never used the literal word "supported"/"unsupported" anywhere, it wrote
-# in second person as a "second opinion to you" (the OLD prompt's voice),
-# and it fabricated generalized industry claims not present in FACTS or
-# REASONING (e.g. "public sector contracts often lead to multi-year
-# revenue streams" — invented background knowledge, not a cited fact).
-# v2.1 adds: a rigid required first sentence (so the verdict word is
-# mechanically guaranteed to appear), an explicit third-person/no-"you"
-# rule, an explicit ban on general/background claims, and a worked
-# example pair using a fictional company so the model has a concrete
-# structural template to match rather than inferring the shape from prose
-# rules alone. Re-pilot this version the same way before trusting it.
+# The fact-set (scenario_facts_for_condition() in app.py) is unchanged: for
+# "agree" it is the set that backs the participant's stance, for
+# "disagree" the set that opposes it, so the prose has real material to
+# cite in either direction. The verdict itself no longer depends on it.
 #
-# The random condition draw (randomization.py) still exists and still
-# drives what the participant sees — but now, together with the
-# participant's own pre-stance, it selects WHICH of two fact-sets (below)
-# the participant's reasoning gets audited against, rather than
-# instructing the model what to conclude. See
-# scenario_facts_for_condition(), build_verdict_prompt() and
-# api_generate_verdict() in app.py for the selection logic.
+# NOT YET APPROVED FOR PARTICIPANTS -- this is the stimulus-generating
+# instruction, so it needs the researcher's sign-off before it ships.
 #
-# {scenario_facts} and {participant_reasoning} are filled in by
-# build_verdict_prompt() in app.py.
-AI_PROMPT_TEMPLATE = """You are generating a short verdict for a research study. A participant has
-just explained, in their own words, why they would or would not invest in
-a venture. You will audit that explanation against a fixed list of facts
-about the venture.
+# Placeholders filled in by build_verdict_prompt() in app.py:
+# {target_verdict} ("supported" | "not_supported"), {min_words},
+# {max_words}, {scenario_facts}, {participant_reasoning}.
+VERDICT_PROMPT_TEMPLATE = """You are writing one short verdict for a research study. A participant has just explained, in their own words, why they would or would not invest in a venture. You are given a fixed list of FACTS about the venture, the participant's REASONING, and the VERDICT TO REPORT.
+
+VERDICT TO REPORT: {target_verdict}
+
+This verdict is fixed. Do not decide it, reconsider it, or soften it. Your task is to write the short explanation that goes with it.
 
 Rules, in order of priority:
 
-1. Use ONLY the facts provided in FACTS below. Do not introduce any detail,
-   number, name, organization, or claim that is not explicitly present in
-   FACTS or in the participant's REASONING. This includes not inventing
-   context (e.g., do not mention government contracts, funding sources,
-   legal status, or any other specific unless it appears verbatim in FACTS).
-2. Do not add general or background claims about how companies, markets,
-   or industries "typically" or "often" behave, even if true in general.
-   Every claim in your response must trace to a specific line in FACTS or
-   REASONING — not to outside knowledge, however plausible-sounding.
-3. Your verdict must evaluate whether the participant's stated REASONING is
-   well-supported by FACTS — not whether investing is a good idea in
-   general, and not your own opinion of the venture.
-4. Output exactly ONE verdict: "supported" or "unsupported". Do not hedge,
-   do not output "partially" or "mixed".
-5. Write in third person, describing the participant and their reasoning.
-   Do not address the participant directly — never use "you" or "your".
-6. Your response must follow this exact structure, in this order, and the
-   first sentence must use this exact template with the bracket filled in:
-   - Sentence 1 (verbatim template): "The participant's reasoning is
-     [supported/unsupported] by the facts." — replace the bracket with
-     exactly one of those two words, nothing else changed.
-   - Sentences 2-3: cite specific facts from FACTS that inform the verdict
-     (name the fact; do not paraphrase into something more dramatic or
-     more mild than the original wording).
-   - Sentence 4: a closing sentence, in neutral tone, with no advice, no
-     encouragement, and no warning language beyond restating the verdict.
-7. Total output must be exactly 4 sentences for BOTH verdict types. Do not
-   let "unsupported" verdicts run longer or use stronger language than
-   "supported" verdicts, or vice versa. Match tone, sentence length, and
-   vocabulary register across both conditions as closely as possible.
-8. Do not use intensifiers, hedges, or affect-laden words that don't appear
-   in FACTS or REASONING (e.g., "alarming," "reassuring," "risky,"
-   "solid," "concerning," "impressive," "genuine," "substantial,"
-   "deliberate"). Stick to descriptive, factual language.
-9. Output plain text only. No markdown, no headers, no bullet points, no
-   JSON.
+1. Use ONLY the facts in FACTS below. Do not introduce any detail, number, name, organization, or claim that is not explicitly present in FACTS or in the participant's REASONING. Do not add general or background claims about how companies, markets, or industries "typically" or "often" behave. Every claim you make must trace to a specific line in FACTS or REASONING.
+2. The explanation must agree with the verdict. If the verdict is "supported", explain how the FACTS bear out the participant's reasoning. If the verdict is "not_supported", explain how the FACTS do not bear it out. Do not say or imply that the verdict was given to you or decided in advance.
+3. Write in third person about "the participant". Never use "you" or "your".
+4. Use exactly 4 sentences. Sentence 1 must be exactly "The participant's reasoning is supported by the facts." when the verdict is "supported", and exactly "The participant's reasoning is not supported by the facts." when the verdict is "not_supported". Sentences 2-3 cite specific facts from FACTS, in wording that stays close to the original. Sentence 4 is a neutral closing sentence that restates the verdict, with no advice, encouragement, or warning.
+5. Length: between {min_words} and {max_words} words in total across the 4 sentences, for BOTH verdicts. Match tone, sentence length, and vocabulary across both verdicts as closely as possible.
+6. Do not use intensifiers or affect-laden words that do not appear in FACTS or REASONING (for example "alarming," "reassuring," "risky," "solid," "concerning," "impressive," "genuine," "substantial," "deliberate"). Stay descriptive and factual.
+7. The explanation is plain text: no markdown, no bullet points, no headers, no line breaks.
 
-EXAMPLE (fictional company, for structure only — do not reuse this
-content, these facts do not apply to the real task below):
+OUTPUT FORMAT: respond with ONLY a JSON object, with nothing before or after it, in exactly this shape. The "verdict" value must be exactly the VERDICT TO REPORT above, and "prose" must be the 4 sentences.
+{{"verdict": "supported" or "not_supported", "prose": "..."}}
+
+EXAMPLES (fictional company, for structure and length only; these facts do not apply to the real task below):
 
 FACTS:
 - Meridian Foods' stock price fell 12% over the past year.
 - Meridian's flagship product line was discontinued six months ago.
-- Meridian added two new product lines this year, which together account
-  for 8% of total revenue.
-- Meridian's CEO stated in a press release that the company is focused on
-  stabilizing existing operations before pursuing new products.
+- Meridian added two new product lines this year, which together account for 8% of total revenue.
+- Meridian's CEO stated in a press release that the company is focused on stabilizing existing operations before pursuing new products.
 
-REASONING: "I wouldn't invest because the stock has been dropping and they
-just cancelled their main product."
+REASONING: "I wouldn't invest because the stock has been dropping and they just cancelled their main product."
+VERDICT TO REPORT: supported
+OUTPUT: {{"verdict": "supported", "prose": "The participant's reasoning is supported by the facts. Meridian Foods' stock price fell 12% over the past year, matching the participant's observation that the stock has been dropping, and the flagship product line was discontinued six months ago, matching the reference to a cancelled main product. The facts also state that Meridian added two new product lines this year, which together account for 8% of total revenue. These facts correspond directly to the stock decline and the discontinued product named in the participant's reasoning, so the reasoning is supported by the facts."}}
 
-CORRECT OUTPUT: "The participant's reasoning is supported by the facts.
-The stock price fell 12% over the past year, and the flagship product
-line was discontinued six months ago, both of which the participant
-cited. These two facts correspond directly to the stock decline and
-product cancellation referenced in the reasoning. No fact in the list
-contradicts this reasoning."
+REASONING: "I'd invest because the company just added two new product lines that will drive growth."
+VERDICT TO REPORT: not_supported
+OUTPUT: {{"verdict": "not_supported", "prose": "The participant's reasoning is not supported by the facts. The facts state that Meridian added two new product lines this year, which together account for 8% of total revenue, and that the CEO described a focus on stabilizing existing operations before pursuing new products. The facts also state that Meridian's stock price fell 12% over the past year and that its flagship product line was discontinued six months ago. No fact states that the new product lines will drive growth or raise the stock price, so the participant's reasoning is not supported by the facts."}}
 
-Now do the same for the real task below. Use ONLY the facts given, follow
-the required first-sentence template, write in third person, and produce
-exactly 4 sentences.
+Now do the same for the real task below.
 
 FACTS:
 {scenario_facts}
@@ -209,6 +167,38 @@ REASONING (participant's own words):
 # model that spends tokens on reasoning more than initially expected.
 AI_TEMPERATURE = 0
 AI_MAX_TOKENS = 4096
+
+# --- Verdict verification (see verdicts.py) -----------------------------------
+# A generation is accepted only if its `verdict` field equals the target for
+# the participant's assigned condition. Up to MAX_VERDICT_ATTEMPTS generations
+# are tried; API errors (503/429/timeouts) are logged but do NOT count as
+# attempts. The whole thing is bounded by VERDICT_TIME_BUDGET_S, which must
+# stay under the 120s gunicorn worker timeout (gunicorn.conf.py).
+MAX_VERDICT_ATTEMPTS = 3
+VERDICT_TIME_BUDGET_S = 90
+
+# Length target given to the model (not enforced; the actual word count is
+# recorded per verdict so any residual length difference can be adjusted for).
+VERDICT_WORD_MIN = 80
+VERDICT_WORD_MAX = 100
+
+# The verdict the model is told to report for each assigned condition.
+TARGET_VERDICT = {"agree": "supported", "disagree": "not_supported"}
+
+# Stored fallback verdicts, one per (pre_stance, condition) cell, served when
+# verification fails MAX_VERDICT_ATTEMPTS times or the time budget runs out
+# (the use and its reason are logged). TO BE WRITTEN BY THE RESEARCHER:
+# plain text, 80-100 words, same 4-sentence format as generated verdicts,
+# and the direction must match the cell (agree -> "supported", disagree ->
+# "not supported"). None means "not written yet": the app will NOT invent a
+# stand-in; it returns an error for that participant instead. Run
+# `python check_fallbacks.py` to validate them before launch.
+FALLBACK_VERDICTS = {
+    ("yes", "agree"): None,
+    ("yes", "disagree"): None,
+    ("no", "agree"): None,
+    ("no", "disagree"): None,
+}
 
 # Two fact-sets per scenario, named by what they contain, NOT by the
 # condition they used to be tied to. Which one a participant is audited

@@ -28,7 +28,7 @@ covariates, and all five DV scales. A few things still need a human, not code:
   collected before 2026-09-21 used the old condition-only mapping and
   aren't comparable. Re-run the blind-audit pilot under the new mapping
   before real participants see this.
-- **Have Ben review `AI_PROMPT_TEMPLATE`** in `config.py`, and the fact-set
+- **Have Ben review `VERDICT_PROMPT_TEMPLATE`** in `config.py` (v3: the model is told the target verdict, and the result is verified; it is NOT yet approved for participants), and the fact-set
   curation approach above, before either touches real participants.
 - **Flag the minors / parental-consent question to Ben.** The consent
   checkbox gates on self-attested age 13+ (enforced again numerically in
@@ -173,6 +173,27 @@ your `.env` locally and in Render's environment variables for production.
   parsed. The condition and its timestamp are written to the DB
   immediately, in that same request, before anything participant-authored
   is stored.
+- **Verdicts are generated live, then verified** (`verdicts.py`,
+  `/api/generate-verdict`). The model is told the target verdict for the
+  assigned condition (`agree` -> `supported`, `disagree` -> `not_supported`)
+  and returns JSON `{verdict, prose}` at temperature 0. A generation is
+  accepted only if `verdict` equals the target and the prose's mandatory
+  first sentence agrees with it; otherwise it is regenerated, up to 3
+  generations. API errors (503/429/timeouts) are logged but do **not** count
+  as attempts; the whole loop has a 90 s budget (under gunicorn's 120 s
+  timeout). If verification fails 3 times, or the budget/quota runs out, the
+  stored fallback for that (stance, condition) cell is served
+  (`FALLBACK_VERDICTS` in `config.py`, written by the researcher; validate
+  with `python check_fallbacks.py`) and the reason is logged. The response to
+  the browser never says a fallback was used.
+  Logged per participant on `participants`: `verdict_target`,
+  `verdict_attempts`, `verdict_fallback_used` / `verdict_fallback_reason`,
+  `verdict_fields` (the `verdict` returned by each generation, JSON),
+  `verdict_api_error_count`, `ai_verdict_word_count`; and per call in the
+  append-only `verdict_attempts` table (outcome, verdict field, prose, word
+  count, the model name the API reported, temperature, latency, error kind).
+  The endpoint is idempotent: a stored verdict is returned, never regenerated.
+  Tests: `python test_verdicts.py` (fake model, no API quota).
 - **The stance is used after the draw, never before it.** At verdict time
   (`/api/generate-verdict`) the stored condition plus the stored
   pre-stance pick the fact-set (`scenario_facts_for_condition()` in

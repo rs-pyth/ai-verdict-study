@@ -79,8 +79,16 @@ CREATE TABLE IF NOT EXISTS participants (
     condition_assigned_at TEXT,
 
     -- Step 4: AI verdict
-    ai_verdict_text TEXT,
+    ai_verdict_text TEXT,              -- the verdict the participant saw (generated prose, or the stored fallback)
     ai_verdict_generated_at TEXT,
+    ai_verdict_word_count INTEGER,     -- whitespace-split word count of ai_verdict_text
+    verdict_target TEXT,               -- 'supported' / 'not_supported': what the assigned condition required
+    verdict_attempts INTEGER,          -- generations tried (API errors NOT counted), 0-3
+    verdict_fallback_used INTEGER,     -- 1 if the stored fallback was served instead of a verified generation
+    verdict_fallback_reason TEXT,      -- verification_failed | time_budget | daily_quota | api_error_fatal
+    verdict_fields TEXT,               -- JSON array: the `verdict` field returned by each generation, in order
+    verdict_api_error_count INTEGER,   -- API errors (503/429/timeout...) noticed along the way
+                                        -- Per-call detail lives in the verdict_attempts table.
 
     -- Step 6: post-verdict measures
     post_stance TEXT,
@@ -130,6 +138,48 @@ MIGRATIONS = [
     # real nor test. A default of 0 would have silently relabeled all the
     # pre-existing synthetic pilot rows as REAL data.
     "ALTER TABLE participants ADD COLUMN is_test INTEGER",
+    "ALTER TABLE participants ADD COLUMN ai_verdict_word_count INTEGER",
+    "ALTER TABLE participants ADD COLUMN verdict_target TEXT",
+    "ALTER TABLE participants ADD COLUMN verdict_attempts INTEGER",
+    "ALTER TABLE participants ADD COLUMN verdict_fallback_used INTEGER",
+    "ALTER TABLE participants ADD COLUMN verdict_fallback_reason TEXT",
+    "ALTER TABLE participants ADD COLUMN verdict_fields TEXT",
+    "ALTER TABLE participants ADD COLUMN verdict_api_error_count INTEGER",
+]
+
+# One row per model call made for a participant -- generations AND API errors --
+# written the moment each call finishes, so a crash mid-loop still leaves a
+# trace. `seq` is the call order; `generation_no` numbers only real generations
+# (API errors have NULL). Rows are append-only: the trigger below refuses
+# UPDATEs. (DELETE stays possible for the pre-launch test-data cleanup.)
+VERDICT_ATTEMPTS_SCHEMAS = [
+    """
+    CREATE TABLE IF NOT EXISTS verdict_attempts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        participant_id TEXT NOT NULL,
+        seq INTEGER NOT NULL,
+        kind TEXT NOT NULL,                -- 'generation' | 'api_error'
+        generation_no INTEGER,
+        outcome TEXT NOT NULL,             -- match | mismatch | malformed | inconsistent | api_error
+        verdict_field TEXT,                -- the `verdict` the model returned (NULL if unparseable / API error)
+        prose TEXT,
+        word_count INTEGER,
+        model TEXT,                        -- the model name the API reported, e.g. to document the exact version
+        temperature REAL,
+        latency_ms INTEGER,
+        error_kind TEXT,                   -- API errors: overloaded | rate_limited | daily_quota | ...
+        error_detail TEXT,                 -- API errors: message; generations: why it was rejected
+        created_at TEXT NOT NULL
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS verdict_attempts_participant ON verdict_attempts (participant_id)",
+    """
+    CREATE TRIGGER IF NOT EXISTS verdict_attempts_append_only
+    BEFORE UPDATE ON verdict_attempts
+    BEGIN
+        SELECT RAISE(ABORT, 'verdict_attempts is append-only');
+    END
+    """,
 ]
 
 # Database-level guarantees for is_test. Installed after the migrations
@@ -207,6 +257,8 @@ def get_db():
                     raise  # a real failure, not just "already migrated"
         for trigger in TRIGGERS:
             conn.execute(trigger)
+        for statement in VERDICT_ATTEMPTS_SCHEMAS:
+            conn.execute(statement)
         conn.commit()
         _schema_ready = True
 
@@ -322,12 +374,41 @@ def get_participant(participant_id):
         return _row_to_dict(cur, row) if row else None
 
 
-def save_ai_verdict(participant_id, verdict_text, timestamp):
+def log_verdict_attempt(participant_id, rec, created_at):
+    """Append one model call (generation or API error) to verdict_attempts."""
     with get_db() as conn:
         conn.execute(
-            "UPDATE participants SET ai_verdict_text = ?, ai_verdict_generated_at = ? WHERE id = ?",
-            (verdict_text, timestamp, participant_id),
+            """
+            INSERT INTO verdict_attempts (participant_id, seq, kind, generation_no, outcome,
+                                          verdict_field, prose, word_count, model, temperature,
+                                          latency_ms, error_kind, error_detail, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (participant_id, rec["seq"], rec["kind"], rec["generation_no"], rec["outcome"],
+             rec["verdict_field"], rec["prose"], rec["word_count"], rec["model"], rec["temperature"],
+             rec["latency_ms"], rec["error_kind"], rec["error_detail"], created_at),
         )
+
+
+def save_verdict_result(participant_id, *, text, word_count, target, attempts, fallback_used,
+                        fallback_reason, fields_json, api_error_count, generated_at):
+    """Store the final verdict. First writer wins: the UPDATE only applies while
+    ai_verdict_text is still NULL, so a second (concurrent or repeated)
+    request can never overwrite the stimulus a participant already saw.
+    Returns True if this call stored it, False if a verdict was already there."""
+    with get_db() as conn:
+        cur = conn.execute(
+            """
+            UPDATE participants SET
+                ai_verdict_text = ?, ai_verdict_generated_at = ?, ai_verdict_word_count = ?,
+                verdict_target = ?, verdict_attempts = ?, verdict_fallback_used = ?,
+                verdict_fallback_reason = ?, verdict_fields = ?, verdict_api_error_count = ?
+            WHERE id = ? AND ai_verdict_text IS NULL
+            """,
+            (text, generated_at, word_count, target, attempts, int(bool(fallback_used)),
+             fallback_reason, fields_json, api_error_count, participant_id),
+        )
+        return cur.rowcount == 1
 
 
 def save_post_verdict(participant_id, stance, confidence, rationale,

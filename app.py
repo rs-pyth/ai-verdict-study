@@ -7,6 +7,7 @@ where explicitly noted.
 
 import csv
 import io
+import json
 import os
 import re
 import secrets
@@ -22,6 +23,7 @@ from openai import OpenAI
 
 import db
 import config
+import verdicts
 from randomization import assign_condition
 
 app = Flask(__name__)
@@ -268,13 +270,15 @@ def api_submit_stance():
     return jsonify({"ok": True})
 
 
-# --- Step 4: AI verdict (v2 — honest audit against a condition-selected
-# fact-set; see config.py's comment above AI_PROMPT_TEMPLATE) -------------
+# --- Step 4: AI verdict (v3 — the model is told the target verdict, then the
+# result is verified; see config.py's comment above VERDICT_PROMPT_TEMPLATE
+# and verdicts.py) ---------------------------------------------------------
 
 def scenario_facts_for_condition(condition, pre_stance):
-    """Which fact-set the participant's reasoning is audited against — the
-    actual experimental manipulation, since the model is never told what
-    verdict to reach.
+    """Which fact-set the model is given to write the verdict from. The
+    verdict's DIRECTION is set by the condition (the model is told the target
+    verdict); this chooses the material the prose can cite, so it has real
+    facts to draw on whichever way it must go.
 
     The condition is the randomized part and is already fixed before this
     runs (drawn and stored in /api/submit-stance before any participant-
@@ -296,13 +300,71 @@ def scenario_facts_for_condition(condition, pre_stance):
     return supports if condition == "agree" else opposes
 
 
-def build_verdict_prompt(scenario_facts, participant_reasoning):
+def build_verdict_prompt(scenario_facts, participant_reasoning, target_verdict):
     """Pure string-building, kept separate from the API call so it's easy
     to read/test on its own."""
-    return config.AI_PROMPT_TEMPLATE.format(
+    return config.VERDICT_PROMPT_TEMPLATE.format(
+        target_verdict=target_verdict,
+        min_words=config.VERDICT_WORD_MIN,
+        max_words=config.VERDICT_WORD_MAX,
         scenario_facts=scenario_facts.strip(),
         participant_reasoning=participant_reasoning,
     )
+
+
+def _classify_api_error(exc):
+    """Map an openai SDK exception onto verdicts.ModelAPIError kinds."""
+    text = str(exc)
+    if isinstance(exc, openai.RateLimitError):
+        # Two real, different Gemini quotas (confirmed from raw errors): the
+        # per-day cap won't clear today, the per-minute one clears shortly.
+        return verdicts.ModelAPIError("daily_quota" if "PerDay" in text else "rate_limited", text)
+    if isinstance(exc, openai.InternalServerError):
+        return verdicts.ModelAPIError("overloaded", text)
+    if isinstance(exc, openai.APITimeoutError):
+        return verdicts.ModelAPIError("timeout", text)
+    if isinstance(exc, openai.APIConnectionError):
+        return verdicts.ModelAPIError("connection", text)
+    if isinstance(exc, openai.APIStatusError):  # 400/401/403/404...: retrying can't help
+        return verdicts.ModelAPIError("bad_request", f"HTTP {exc.status_code}: {text}")
+    return verdicts.ModelAPIError("other", text)
+
+
+def call_model(prompt, timeout):
+    """One model call. Returns (raw_text, model_name); raises verdicts.ModelAPIError.
+    No retries here and the SDK's own are off (max_retries=0): the loop in
+    verdicts.py decides what to retry, so every real request is counted."""
+    global _thinking_config_supported
+    client = ai_client.with_options(timeout=timeout)
+    create_kwargs = dict(
+        model=AI_MODEL,
+        max_tokens=config.AI_MAX_TOKENS,
+        temperature=config.AI_TEMPERATURE,
+        # A system-only message array is rejected by Gemini's OpenAI-compat
+        # layer ("contents is not specified"); one user message works everywhere.
+        messages=[{"role": "user", "content": prompt}],
+    )
+    try:
+        if _thinking_config_supported:
+            try:
+                response = client.chat.completions.create(
+                    **create_kwargs,
+                    extra_body={"extra_body": {"google": {"thinking_config": {
+                        "thinking_budget": 1024, "include_thoughts": False}}}},
+                )
+            except openai.BadRequestError:
+                # Unverified parameter shape rejected: stop sending it for the
+                # rest of this worker's life and retry once without it.
+                _thinking_config_supported = False
+                app.logger.warning("thinking_config extra_body rejected; falling back to the default request shape.")
+                response = client.chat.completions.create(**create_kwargs)
+        else:
+            response = client.chat.completions.create(**create_kwargs)
+    except openai.OpenAIError as e:
+        app.logger.warning(f"model call failed: {type(e).__name__}: {str(e)[:300]}")
+        raise _classify_api_error(e)
+    content = response.choices[0].message.content if response.choices else None
+    return content or "", getattr(response, "model", None)
 
 
 @app.route("/api/generate-verdict", methods=["POST"])
@@ -310,117 +372,60 @@ def api_generate_verdict():
     data = request.get_json()
     participant_id = data["participant_id"]
 
-    # Read condition/rationale from storage, not from the request, so the
-    # AI call always reflects what was actually recorded (and randomized)
-    # rather than whatever the client happens to send.
+    # Read condition/stance/rationale from storage, not from the request, so
+    # the generation always reflects what was actually recorded (and drawn).
     participant = db.get_participant(participant_id)
     if participant is None or participant["condition"] is None:
         return jsonify({"error": "no condition assigned for this participant"}), 400
     if participant["pre_stance"] not in ("yes", "no"):
         return jsonify({"error": "no stance recorded for this participant"}), 400
 
-    scenario_facts = scenario_facts_for_condition(participant["condition"], participant["pre_stance"])
-    prompt = build_verdict_prompt(
-        scenario_facts=scenario_facts,
-        participant_reasoning=participant["pre_rationale"],
-    )
+    # Idempotent: a verdict that was already served is returned as stored and
+    # NEVER regenerated, so a reload, a double-click or a second tab can't
+    # re-roll the stimulus (or burn quota).
+    if participant["ai_verdict_text"]:
+        return jsonify({"verdict": participant["ai_verdict_text"]})
 
     if ai_client is None:
+        # A deployment fault, not a participant-level failure: fail loudly
+        # rather than quietly serving every participant the fallback.
         return jsonify({"error": "GEMINI_API_KEY not configured on the server"}), 500
 
-    # A system-only message array (no "user" turn) worked fine against
-    # OpenRouter/Claude, but Gemini's OpenAI-compat layer rejects it with
-    # "GenerateContentRequest.contents is not specified" — its system role
-    # maps to a separate field, not to `contents`, so `contents` ends up
-    # empty with nothing else in the array. Sending everything as a single
-    # "user" message works universally across providers, which matters
-    # now that we're on our second provider swap.
-    global _thinking_config_supported
-    create_kwargs = dict(
-        model=AI_MODEL,
-        max_tokens=config.AI_MAX_TOKENS,
-        temperature=config.AI_TEMPERATURE,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    try:
-        if _thinking_config_supported:
-            try:
-                response = ai_client.chat.completions.create(
-                    **create_kwargs,
-                    extra_body={
-                        "extra_body": {
-                            "google": {
-                                "thinking_config": {
-                                    "thinking_budget": 1024,
-                                    "include_thoughts": False,
-                                }
-                            }
-                        }
-                    },
-                )
-            except openai.BadRequestError:
-                # Unverified parameter shape was rejected -- remember that
-                # for the rest of this worker's lifetime so we don't pay
-                # for this mistake on every subsequent call, then fall
-                # back to the known-working request for this one.
-                _thinking_config_supported = False
-                app.logger.warning(
-                    "thinking_config extra_body rejected by the API -- "
-                    "falling back to the default request shape for the "
-                    "rest of this worker's lifetime."
-                )
-                response = ai_client.chat.completions.create(**create_kwargs)
-        else:
-            response = ai_client.chat.completions.create(**create_kwargs)
-    except openai.RateLimitError as e:
-        # RateLimitError (429) covers two genuinely different Gemini
-        # quotas, confirmed live from the raw error's quotaId in each
-        # case: GenerateRequestsPerDayPerProjectPerModel-FreeTier
-        # (2026-09-08, limit 20 -- resolves next day) vs.
-        # GenerateRequestsPerMinutePerProjectPerModel-FreeTier
-        # (2026-09-17, limit 5 -- resolves within about a minute). This
-        # handler used to unconditionally tell participants "try again
-        # tomorrow" for both, which is actively wrong for the per-minute
-        # case. Distinguishing on the quotaId string in the raw message
-        # rather than guessing from timing.
-        error_text = str(e)
-        app.logger.warning(f"RateLimitError on /api/generate-verdict: {error_text}")
-        if "PerMinute" in error_text:
-            return jsonify({
-                "error": "rate_limited",
-                "message": (
-                    "The AI service is handling a lot of requests right now. "
-                    "Please wait about a minute and try again."
-                ),
-            }), 429
-        return jsonify({
-            "error": "daily_limit_reached",
-            "message": (
-                "This study has reached its response limit for today. "
-                "Please try again tomorrow, or contact the researcher."
-            ),
-        }), 429
-    except openai.InternalServerError:
-        # Confirmed live in Render's logs (2026-09-07): Gemini returns a
-        # distinct 503 "This model is currently experiencing high demand"
-        # under load -- a different exception class from RateLimitError,
-        # so it wasn't caught here before and fell through as a raw HTML
-        # 500 (unparseable by app.js's postJSON, which only extracts a
-        # JSON error body). The retry button already handles this fine
-        # once it gets a real message -- this is transient per Google's
-        # own wording, unlike the daily quota -- so give it one instead of
-        # an opaque server error page.
-        return jsonify({
-            "error": "model_overloaded",
-            "message": (
-                "The AI service is temporarily overloaded. Please try "
-                "again in a moment."
-            ),
-        }), 503
-    verdict_text = response.choices[0].message.content
+    condition, stance = participant["condition"], participant["pre_stance"]
+    target = verdicts.target_for(condition, config.TARGET_VERDICT)
+    prompt_builder = lambda: build_verdict_prompt(
+        scenario_facts_for_condition(condition, stance), participant["pre_rationale"], target)
 
-    db.save_ai_verdict(participant_id, verdict_text, now())
-    return jsonify({"verdict": verdict_text})
+    result = verdicts.run_loop(
+        target=target,
+        build_prompt=prompt_builder,
+        call_model=call_model,
+        max_attempts=config.MAX_VERDICT_ATTEMPTS,
+        budget_s=config.VERDICT_TIME_BUDGET_S,
+        temperature=config.AI_TEMPERATURE,
+        on_record=lambda rec: db.log_verdict_attempt(participant_id, rec, now()),
+    )
+
+    if result["accepted"]:
+        text, word_count, fallback_used, fallback_reason = result["prose"], result["word_count"], False, None
+    else:
+        text = config.FALLBACK_VERDICTS.get((stance, condition))
+        if not text:
+            app.logger.error(f"fallback needed for {stance}/{condition} ({result['reason']}) but none is configured")
+            return jsonify({
+                "error": "fallback_unavailable",
+                "message": "We couldn't generate a response just now. Please try again in a moment, or contact the researcher.",
+            }), 503
+        word_count, fallback_used, fallback_reason = len(text.split()), True, result["reason"]
+
+    stored = db.save_verdict_result(
+        participant_id, text=text, word_count=word_count, target=target,
+        attempts=result["generations"], fallback_used=fallback_used, fallback_reason=fallback_reason,
+        fields_json=json.dumps(result["fields"]), api_error_count=result["api_errors"], generated_at=now(),
+    )
+    if not stored:  # another request finished first; serve what's on record
+        text = db.get_participant(participant_id)["ai_verdict_text"]
+    return jsonify({"verdict": text})
 
 
 # --- Step 6: post-verdict measures ---------------------------------------
