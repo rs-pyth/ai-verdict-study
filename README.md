@@ -28,7 +28,7 @@ covariates, and all five DV scales. A few things still need a human, not code:
   collected before 2026-09-21 used the old condition-only mapping and
   aren't comparable. Re-run the blind-audit pilot under the new mapping
   before real participants see this.
-- **Have Ben review `VERDICT_PROMPT_TEMPLATE`** in `config.py` (v3: the model is told the target verdict, and the result is verified; it is NOT yet approved for participants), and the fact-set
+- **Have Ben review `VERDICT_PROMPT_TEMPLATE`** in `config.py` (v3: the model is told the target verdict, and the result is verified; approved by the researcher 2026-10-28, advisor review still pending), and the fact-set
   curation approach above, before either touches real participants.
 - **Flag the minors / parental-consent question to Ben.** The consent
   checkbox gates on self-attested age 13+ (enforced again numerically in
@@ -38,6 +38,17 @@ covariates, and all five DV scales. A few things still need a human, not code:
   link), that self-attestation is probably not enough on its own — this is
   a judgment call for your advisor's review, not something to default your
   way through in code.
+
+## Confirmed design parameters (researcher, 2026-10-28)
+
+Verdicts are written live by the model on demand (no pre-generated bank); the
+four stored fallbacks are only a safety net. Condition labels `agree` /
+`contradict`; stance-stratified permuted blocks of 4 (`perm_block4_v1`);
+temperature 0; at most 3 generations (API errors don't count); 90 s budget;
+80-100 word target (actual count recorded); agree -> `supported`, contradict ->
+`not_supported`; completion time = active time (excludes the AI wait). Jian
+item 2 stays reworded and is disclosed as a deviation. Not yet specified: the
+speeder-exclusion floor (left unspecified on purpose; see below).
 
 ## Analysis reference: DV → hypothesis mapping
 
@@ -70,11 +81,9 @@ Applied identically across both conditions:
   CSV export.
 - **Completion-time floor.** Use `completion_time_s` in the export (active
   time: consent to debrief minus the wait for the AI verdict, so a slow API
-  call doesn't change who is excluded). A defensible pre-registered floor is
-  **under 2 minutes (120s)** active survey time, roughly a third of the ~5-10 minute expected honest
-  completion time (the standard heuristic for catching speeders without
-  over-excluding genuinely fast responses). Tighten this once you have
-  real pilot completion-time data to calibrate against.
+  call doesn't change who is excluded). **The cutoff is deliberately left
+  unspecified**: set it, and write it into the pre-registration, before
+  looking at any real data.
 
 ## Run locally
 

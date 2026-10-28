@@ -66,6 +66,7 @@ STANCE_QUESTION_POST = "After seeing this analysis, would you invest in TechFlow
 # since the ID isn't known until the browser generates it.
 WITHDRAWAL_WINDOW = "7 days"
 
+# Debrief text approved by the researcher on 2026-10-28.
 DEBRIEF_TEXT = f"""Thank you — here's what this study was actually about.
 
 The AI's response to your reasoning was not a genuine assessment of it. After you told us whether you would invest, a random draw decided whether the AI would agree or contradict that decision. The draw was made separately among participants who gave the same answer as you, so that agreeing and contradicting responses were evenly shared, and it did not depend on what you wrote or on how good your reasoning was. The AI was then told which verdict to give and wrote its explanation to fit that verdict, using only the facts from the scenario. In a small number of cases, if the AI could not produce a response that fit, you saw a pre-written response instead. None of this reflects on how good your reasoning actually was.
@@ -99,8 +100,10 @@ Questions or concerns: {CONTACT_EMAIL}. Thank you again for your time — this s
 # "contradict" the set that opposes it, so the prose has real material to
 # cite in either direction. The verdict itself no longer depends on it.
 #
-# NOT YET APPROVED FOR PARTICIPANTS -- this is the stimulus-generating
-# instruction, so it needs the researcher's sign-off before it ships.
+# APPROVED by the researcher on 2026-10-28 (this is the stimulus-generating
+# instruction). Verdicts are written live by the model, not drawn from a
+# pre-generated bank; any change to this text needs fresh sign-off and is a
+# change to the pre-registered stimulus.
 #
 # Placeholders filled in by build_verdict_prompt() in app.py:
 # {target_verdict} ("supported" | "not_supported"), {min_words},
@@ -194,10 +197,10 @@ TARGET_VERDICT = {"agree": "supported", "contradict": "not_supported"}
 # stand-in; it returns an error for that participant instead. Run
 # `python check_fallbacks.py` to validate them before launch.
 FALLBACK_VERDICTS = {
-    ("yes", "agree"): None,
-    ("yes", "contradict"): None,
-    ("no", "agree"): None,
-    ("no", "contradict"): None,
+    ('yes', 'agree'): "The participant's reasoning is supported by the facts. TechFlow Inc.'s stock price has risen 40% over the past year, and a large government contract signed 8 months ago now accounts for 35% of its total revenue this year. The CEO stated in an earnings call that the company is \"exploring additional government partnerships to build on this momentum.\" These facts are consistent with a decision to invest, because they describe the stock price, the contract and the CEO's stated plan, so the reasoning is supported by the facts.",
+    ('yes', 'contradict'): "The participant's reasoning is not supported by the facts. TechFlow's core subscription business grew only 3% over the past year, compared with an industry average growth rate of 12% for comparable subscription businesses. Almost all of TechFlow's revenue growth this year has come from one large government contract signed 8 months ago, which now accounts for 35% of its total revenue this year. No fact states that this growth will continue without that contract, and no fact describes growth in the original product line beyond 3%, so the reasoning is not supported by the facts.",
+    ('no', 'agree'): "The participant's reasoning is supported by the facts. TechFlow's core subscription business grew only 3% over the past year, compared with an industry average growth rate of 12% for comparable subscription businesses. Almost all of TechFlow's revenue growth this year has come from one large government contract signed 8 months ago, which now accounts for 35% of its total revenue this year. These facts are consistent with a decision not to invest, and they describe no growth outside that one contract beyond the 3% in the original product line, so the reasoning is supported by the facts.",
+    ('no', 'contradict'): "The participant's reasoning is not supported by the facts. TechFlow Inc.'s stock price has risen 40% over the past year, and a large government contract signed 8 months ago now accounts for 35% of its total revenue this year. The CEO stated in an earnings call that the company is \"exploring additional government partnerships to build on this momentum.\" These facts do not point toward a decision against investing, because they describe the stock price, the contract and the CEO's stated plan, so the reasoning is not supported by the facts.",
 }
 
 # Two fact-sets per scenario, named by what they contain, NOT by the
@@ -345,6 +348,8 @@ TRUST_INSTRUCTIONS = "Thinking about the analysis you just received, please rate
 # ("behaves in an underhanded manner") to plain language — "underhanded"
 # read as confusing/unfamiliar to test participants. This is a deliberate
 # deviation from the source scale, unlike the "the system" phrasing above.
+# Researcher decision 2026-10-28: KEEP the reworded item 2, and disclose the
+# deviation from Jian et al. (2000) in the pre-registration.
 TRUST_ITEMS = [
     "The system is deceptive.",                                    # 1 - reverse-scored
     "The system behaves in a sneaky or dishonest way.",             # 2 - reverse-scored
