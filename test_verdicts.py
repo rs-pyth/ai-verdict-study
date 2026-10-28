@@ -169,18 +169,18 @@ def test_word_count_and_model_are_recorded():
 
 
 def test_fallback_validation():
-    good = {("yes", "agree"): prose(S, 90), ("yes", "disagree"): prose(N, 85),
-            ("no", "agree"): prose(S, 95), ("no", "disagree"): prose(N, 88)}
+    good = {("yes", "agree"): prose(S, 90), ("yes", "contradict"): prose(N, 85),
+            ("no", "agree"): prose(S, 95), ("no", "contradict"): prose(N, 88)}
     # make them distinct from each other
     good[("no", "agree")] = good[("no", "agree")].replace("word1 ", "other ")
     assert verdicts.validate_fallbacks(good, config.TARGET_VERDICT, 80, 100) == []
     bad = dict(good)
     bad[("yes", "agree")] = None
-    bad[("yes", "disagree")] = prose(N, 60)                       # too short
+    bad[("yes", "contradict")] = prose(N, 60)                       # too short
     bad[("no", "agree")] = prose(N, 90)                           # wrong direction for 'agree'
     problems = verdicts.validate_fallbacks(bad, config.TARGET_VERDICT, 80, 100)
     assert any("yes/agree: not written yet" in p for p in problems)
-    assert any("yes/disagree: 60 words" in p for p in problems)
+    assert any("yes/contradict: 60 words" in p for p in problems)
     assert any("no/agree" in p and "verdict sentence" in p or "disagrees" in p for p in problems), problems
     print("PASS: fallback validation flags missing, wrong-length and wrong-direction texts.")
 
@@ -190,8 +190,8 @@ A.TEST_MODE_TOKEN = "route-test-token"
 A.ai_client = object()  # non-None so the route proceeds; call_model is replaced per test
 client = A.app.test_client()
 _n = [0]
-FALLBACKS = {("yes", "agree"): prose(S, 90).replace("word1 ", "fbA "), ("yes", "disagree"): prose(N, 90).replace("word1 ", "fbB "),
-             ("no", "agree"): prose(S, 90).replace("word1 ", "fbC "), ("no", "disagree"): prose(N, 90).replace("word1 ", "fbD ")}
+FALLBACKS = {("yes", "agree"): prose(S, 90).replace("word1 ", "fbA "), ("yes", "contradict"): prose(N, 90).replace("word1 ", "fbB "),
+             ("no", "agree"): prose(S, 90).replace("word1 ", "fbC "), ("no", "contradict"): prose(N, 90).replace("word1 ", "fbD ")}
 
 
 def raw(sql, params=()):
@@ -206,12 +206,14 @@ def raw(sql, params=()):
 
 
 def make(condition="agree", stance="yes", rationale="Because the stock is up."):
+    """A participant with a FORCED condition. The condition is written straight
+    to the row (the first write is allowed; it is write-once afterwards),
+    because these tests are about verdict generation, not the draw."""
     _n[0] += 1
     pid = f"test-route-{_n[0]}"
-    A.assign_condition = lambda: condition
     assert client.post("/api/consent", json={"participant_id": pid, "test_token": A.TEST_MODE_TOKEN}).status_code == 200
-    r = client.post("/api/submit-stance", headers={"X-Participant-Id": pid}, json={"stance": stance, "confidence": 5, "rationale": rationale})
-    assert r.status_code == 200
+    raw("UPDATE participants SET pre_stance=?, pre_confidence=5, pre_rationale=?, condition=? WHERE id=?",
+        (stance, rationale, condition, pid))
     return pid
 
 
@@ -246,8 +248,8 @@ def test_route_verified_generation_is_stored_and_logged():
 
 
 def test_route_tells_the_model_the_right_target_and_facts_for_every_cell():
-    expect = {("yes", "agree"): ("supported", config.SCENARIO_FACTS_GROWTH), ("yes", "disagree"): ("not_supported", config.SCENARIO_FACTS_RISK),
-              ("no", "agree"): ("supported", config.SCENARIO_FACTS_RISK), ("no", "disagree"): ("not_supported", config.SCENARIO_FACTS_GROWTH)}
+    expect = {("yes", "agree"): ("supported", config.SCENARIO_FACTS_GROWTH), ("yes", "contradict"): ("not_supported", config.SCENARIO_FACTS_RISK),
+              ("no", "agree"): ("supported", config.SCENARIO_FACTS_RISK), ("no", "contradict"): ("not_supported", config.SCENARIO_FACTS_GROWTH)}
     for (stance, cond), (target, facts) in expect.items():
         pid = make(cond, stance, rationale=f"MY-REASON-{stance}-{cond}")
         seen = []
@@ -273,13 +275,13 @@ def test_route_is_idempotent_and_never_regenerates():
 
 
 def test_route_serves_fallback_after_three_mismatches_and_logs_it():
-    pid = make("disagree", "no")
+    pid = make("contradict", "no")
     r = generate(pid, lambda p, timeout: (answer(S), "m"))  # target is not_supported, model keeps saying supported
     x = row(pid)
-    assert r.get_json() == {"verdict": FALLBACKS[("no", "disagree")]}, "response must not leak that a fallback was used"
+    assert r.get_json() == {"verdict": FALLBACKS[("no", "contradict")]}, "response must not leak that a fallback was used"
     assert (x["verdict_fallback_used"], x["verdict_fallback_reason"], x["verdict_attempts"], x["verdict_target"]) == (1, "verification_failed", 3, N)
-    assert json.loads(x["verdict_fields"]) == [S, S, S] and x["ai_verdict_text"] == FALLBACKS[("no", "disagree")]
-    assert x["ai_verdict_word_count"] == len(FALLBACKS[("no", "disagree")].split()) and len(attempts(pid)) == 3
+    assert json.loads(x["verdict_fields"]) == [S, S, S] and x["ai_verdict_text"] == FALLBACKS[("no", "contradict")]
+    assert x["ai_verdict_word_count"] == len(FALLBACKS[("no", "contradict")].split()) and len(attempts(pid)) == 3
     print("PASS: 3 mismatches -> that cell's stored fallback is served and logged; the response reveals nothing.")
 
 

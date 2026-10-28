@@ -68,9 +68,9 @@ WITHDRAWAL_WINDOW = "7 days"
 
 DEBRIEF_TEXT = f"""Thank you — here's what this study was actually about.
 
-The AI's response to your reasoning was randomly assigned before you ever wrote it — a coin flip decided, independent of anything about you or your argument, whether the AI would agree or disagree with your decision. It was not a genuine, independent assessment of the quality of your thinking, and it does not reflect on how good your reasoning actually was.
+The AI's response to your reasoning was not a genuine assessment of it. After you told us whether you would invest, a random draw decided whether the AI would agree or contradict that decision. The draw was made separately among participants who gave the same answer as you, so that agreeing and contradicting responses were evenly shared, and it did not depend on what you wrote or on how good your reasoning was. The AI was then told which verdict to give and wrote its explanation to fit that verdict, using only the facts from the scenario. In a small number of cases, if the AI could not produce a response that fit, you saw a pre-written response instead. None of this reflects on how good your reasoning actually was.
 
-Why the deception was necessary: If you had known in advance that the AI's agreement or disagreement was random, it likely would have changed how much you trusted or engaged with its response — which would have made it impossible to measure what we're actually studying.
+Why the deception was necessary: If you had known in advance that the AI's agreement or contradiction was assigned at random, it likely would have changed how much you trusted or engaged with its response — which would have made it impossible to measure what we're actually studying.
 
 What we're studying: A common finding in behavioral research is that people trust AI tools more when the AI agrees with them, and less when it disagrees — even when the AI's disagreement might be the more useful, accurate signal. This matters because tools designed to catch flawed reasoning (like the one this study is modeled on) only work if people actually listen when the tool pushes back. We're testing whether that trust gap shows up here, and whether it's specific to disagreement itself rather than to the quality of the AI's reasoning.
 
@@ -96,7 +96,7 @@ Questions or concerns: {CONTACT_EMAIL}. Thank you again for your time — this s
 #
 # The fact-set (scenario_facts_for_condition() in app.py) is unchanged: for
 # "agree" it is the set that backs the participant's stance, for
-# "disagree" the set that opposes it, so the prose has real material to
+# "contradict" the set that opposes it, so the prose has real material to
 # cite in either direction. The verdict itself no longer depends on it.
 #
 # NOT YET APPROVED FOR PARTICIPANTS -- this is the stimulus-generating
@@ -183,21 +183,21 @@ VERDICT_WORD_MIN = 80
 VERDICT_WORD_MAX = 100
 
 # The verdict the model is told to report for each assigned condition.
-TARGET_VERDICT = {"agree": "supported", "disagree": "not_supported"}
+TARGET_VERDICT = {"agree": "supported", "contradict": "not_supported"}
 
 # Stored fallback verdicts, one per (pre_stance, condition) cell, served when
 # verification fails MAX_VERDICT_ATTEMPTS times or the time budget runs out
 # (the use and its reason are logged). TO BE WRITTEN BY THE RESEARCHER:
 # plain text, 80-100 words, same 4-sentence format as generated verdicts,
-# and the direction must match the cell (agree -> "supported", disagree ->
+# and the direction must match the cell (agree -> "supported", contradict ->
 # "not supported"). None means "not written yet": the app will NOT invent a
 # stand-in; it returns an error for that participant instead. Run
 # `python check_fallbacks.py` to validate them before launch.
 FALLBACK_VERDICTS = {
     ("yes", "agree"): None,
-    ("yes", "disagree"): None,
+    ("yes", "contradict"): None,
     ("no", "agree"): None,
-    ("no", "disagree"): None,
+    ("no", "contradict"): None,
 }
 
 # Two fact-sets per scenario, named by what they contain, NOT by the
@@ -206,11 +206,11 @@ FALLBACK_VERDICTS = {
 # pre-stance) — see scenario_facts_for_condition() in app.py:
 #   condition 'agree'    -> the set that SUPPORTS their stance
 #                           (stance yes -> GROWTH, stance no -> RISK)
-#   condition 'disagree' -> the set that OPPOSES their stance
+#   condition 'contradict' -> the set that OPPOSES their stance
 #                           (stance yes -> RISK,   stance no -> GROWTH)
 #
 # Why the stance is in the mapping (2026-09-21): the original mapping tied
-# 'agree' to the growth set and 'disagree' to the risk set regardless of
+# 'agree' to the growth set and 'contradict' to the risk set regardless of
 # stance. The 60-row pilot export showed that made `condition` nearly
 # meaningless on its own: for substantive rationales the verdict was
 # "supported" 46% of the time under agree vs 50% under disagree, because

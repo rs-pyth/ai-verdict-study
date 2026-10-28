@@ -15,7 +15,7 @@ covariates, and all five DV scales. A few things still need a human, not code:
   `config.py` — drafted, not placeholders, but not vetted either. The AI
   genuinely audits the participant's reasoning against whichever fact-set
   the randomized condition and the participant's own stance select
-  (`agree` = the set that backs their stance, `disagree` = the set that
+  (`agree` = the set that backs their stance, `contradict` = the set that
   opposes it), rather than being told what to conclude — so these two
   fact-sets ARE the experimental manipulation. They're split by which
   true facts each includes (growth-case vs. risk-case), not by tone. Read
@@ -46,7 +46,7 @@ For your write-up, not enforced anywhere in code:
 | Hypothesis | Primary DV(s) |
 |---|---|
 | H1 (sycophancy trap — trust tracks agreement, not correctness) | DV1 (Trust) |
-| H2 (grounding buys trust back) | Out of scope for this two-cell (agree/disagree only) version — would need a third bare-vs-evidence factor. Say so explicitly in the write-up rather than dropping it silently. |
+| H2 (grounding buys trust back) | Out of scope for this two-cell (agree/contradict only) version — would need a third bare-vs-evidence factor. Say so explicitly in the write-up rather than dropping it silently. |
 | H3 (bias blind spot) | DV4 (Perceived bias) |
 | Exploratory: does disagreement reduce advice-uptake | DV3 — stance-switch rate (`pre_stance` vs. `post_stance`) and confidence delta (`pre_confidence` vs. `post_confidence`), broken out by `condition`. Not asked directly — compute from the CSV export. |
 | Exploratory: disagreement → perceived competence, independent of trust | DV2 |
@@ -68,10 +68,10 @@ Applied identically across both conditions:
   enforced live — a wrong answer is still recorded and the participant
   proceeds normally; the exclusion happens at analysis time, from the
   CSV export.
-- **Completion-time floor.** No new column needed — compute from
-  `consent_timestamp` and `completed_at`, both already in every export.
-  A defensible pre-registered floor is **under 2 minutes (120s)** total
-  survey time, roughly a third of the ~5-10 minute expected honest
+- **Completion-time floor.** Use `completion_time_s` in the export (active
+  time: consent to debrief minus the wait for the AI verdict, so a slow API
+  call doesn't change who is excluded). A defensible pre-registered floor is
+  **under 2 minutes (120s)** active survey time, roughly a third of the ~5-10 minute expected honest
   completion time (the standard heuristic for catching speeders without
   over-excluding genuinely fast responses). Tighten this once you have
   real pilot completion-time data to calibrate against.
@@ -101,10 +101,23 @@ below for why production needs Turso instead.
 http://localhost:5050/admin/export?password=YOUR_ADMIN_EXPORT_PASSWORD
 ```
 
-Downloads everything as CSV, one row per participant, columns matching the
-`participants` table in `db.py`. **Real participants only** by default:
-add `&include_test=1` to also get test rows and legacy (pre-flag) rows,
-told apart by the `is_test` column.
+One CSV, one row per participant, **real participants only** by default (add
+`&include_test=1` for test and legacy rows, told apart by `is_test`). Columns
+are defined and documented in `analysis.py`: participant id, `is_test`,
+stance, condition, `verdict_id` (+ `verdict_source` live/fallback, attempts,
+word count), `trust_1`..`trust_12` raw, `attention_check_item13` raw, the
+scored variables, pre/post confidence, three time columns and
+`attention_check_pass`. Scoring (7-point items): `trust_composite` = mean of
+items 1-11 with items 1-5 reversed (8 - x); `distrust_subscore` = mean of
+items 1-5 **not** reversed; `trust_subscore` = mean of items 6-11;
+`perceived_bias` = mean of the 3 bias items with item 2 reversed. Item 12
+(familiarity) is in no composite. A score is blank unless every item feeding it
+was answered; nothing is imputed. `verdict_id` is `fallback-<stance>-<condition>`
+for the four stored fallbacks and `live-<hash of the text>` otherwise.
+`completion_time_s` is **active time** = `total_time_s` (consent to debrief
+submitted) minus `verdict_wait_s` (asking for the verdict to receiving it).
+`?format=raw` returns the full database table (every column, free text
+included) for auditing. Tests: `python test_export.py`.
 
 ## Test runs (the `is_test` flag)
 
@@ -128,6 +141,25 @@ nothing is filtered at analysis time.
 - Every inconsistent combination (test id without token, token without test
   id, wrong token) is refused with a 400 and creates no row.
 - Run `python test_test_flag.py` after touching any of this.
+
+## Tests
+
+Plain scripts, no pytest; each prints PASS lines and ends with "All ... passed".
+They use throwaway databases and never touch `data/study.db`, Turso or Gemini.
+
+```bash
+python test_randomization.py        # stance-stratified permuted blocks, free text can't reach the draw
+python test_double_submit.py        # repeated + concurrent submits (separate processes) -> one draw
+python test_test_flag.py            # immutable is_test flag
+python test_verdicts.py             # verification loop, retries, fallback, logging (fake model)
+python test_export.py               # analysis CSV scoring and route
+python test_double_click_browser.py # REAL double/triple clicks in headless Chromium (needs Playwright)
+```
+
+The browser test is dev-only: `pip install -r requirements-dev.txt && python -m
+playwright install chromium` (Render installs `requirements.txt` only). It
+makes the test server answer slowly so the 2nd/3rd click land while the first
+request is in flight, then checks the database itself: one slot, one condition.
 
 ## Storage: why Turso, not just a local file
 
@@ -167,15 +199,25 @@ your `.env` locally and in Render's environment variables for production.
 
 ## Notes on the design
 
-- **Randomization** happens server-side in `/api/submit-stance`
-  (`app.py`), calling `assign_condition()` (`randomization.py`) *before*
-  the request body — the participant's actual stance/rationale — is even
-  parsed. The condition and its timestamp are written to the DB
-  immediately, in that same request, before anything participant-authored
-  is stored.
+- **Randomization** (`randomization.py`, `/api/submit-stance`, scheme
+  `perm_block4_v1`). The order is: (1) validate and record the participant's
+  stance (write-once); (2) draw the condition, **stratified on that stance**;
+  (3) only later, serve the verdict. Within each stance, conditions are dealt
+  from shuffled blocks of 4 (2 `agree` + 2 `contradict`), so the arms stay
+  balanced within each stance throughout recruitment. The draw can see only the
+  validated `yes`/`no` stance (read back from storage); the rationale,
+  confidence and covariates never reach it. Blocks come from OS entropy and are
+  stored in `allocation_slots`; a slot is claimed by one atomic UPDATE and
+  belongs to one participant id forever, so a double-click, retry or second tab
+  cannot cause a second draw. Triggers make `condition` and `pre_stance`
+  write-once. Test runs (`is_test = 1`) draw from a separate `test` pool and
+  never consume real participants' blocks. Logged on every row: `pre_stance`,
+  `stance_recorded_at` (always <= `condition_assigned_at`), `assignment_scheme`,
+  `assignment_stratum`, `assignment_block`, `assignment_position`. Tests:
+  `python test_randomization.py`, `python test_double_submit.py`.
 - **Verdicts are generated live, then verified** (`verdicts.py`,
   `/api/generate-verdict`). The model is told the target verdict for the
-  assigned condition (`agree` -> `supported`, `disagree` -> `not_supported`)
+  assigned condition (`agree` -> `supported`, `contradict` -> `not_supported`)
   and returns JSON `{verdict, prose}` at temperature 0. A generation is
   accepted only if `verdict` equals the target and the prose's mandatory
   first sentence agrees with it; otherwise it is regenerated, up to 3
@@ -194,12 +236,12 @@ your `.env` locally and in Render's environment variables for production.
   count, the model name the API reported, temperature, latency, error kind).
   The endpoint is idempotent: a stored verdict is returned, never regenerated.
   Tests: `python test_verdicts.py` (fake model, no API quota).
-- **The stance is used after the draw, never before it.** At verdict time
-  (`/api/generate-verdict`) the stored condition plus the stored
+- **Condition means agree / contradict the participant's own stance.** At
+  verdict time (`/api/generate-verdict`) the stored condition plus the stored
   pre-stance pick the fact-set (`scenario_facts_for_condition()` in
-  `app.py`). That keeps `condition` independent of stance by
-  construction, while making `condition` itself mean "audited against
-  facts that back / oppose what the participant said" for everyone.
+  `app.py`), so `condition` means "audited against facts that back / oppose
+  what the participant said" for everyone. Because the draw is stratified on
+  stance, condition is balanced within each stance by design.
 - **No PII**: participant IDs are random UUIDs generated in the browser
   (`static/js/app.js`) and never tied to a name/email. The server doesn't
   log IPs beyond Flask/Render's normal access logs.

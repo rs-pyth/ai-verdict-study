@@ -22,8 +22,11 @@ cursor.description so the rest of the codebase can keep doing row["column"].
 """
 
 import os
+import time
 import libsql
 from contextlib import contextmanager
+
+import randomization
 
 DB_PATH = "data/study.db"  # local fallback, only used when Turso isn't configured
 TURSO_DATABASE_URL = os.environ.get("TURSO_DATABASE_URL")
@@ -70,15 +73,22 @@ CREATE TABLE IF NOT EXISTS participants (
                                         -- not just stance-switch rate
     pre_rationale TEXT,
     pre_rationale_word_count INTEGER,
+    stance_recorded_at TEXT,           -- when pre_stance was stored. WRITE-ONCE (trigger). The draw below
+                                        -- happens strictly after it: stance_recorded_at <= condition_assigned_at.
 
-    -- Step 3: RANDOMIZATION — see randomization.py. Logged the instant it's
-    -- drawn, before pre_stance/pre_rationale above are even read by the
-    -- handler. condition_assigned_at should always be <= any timestamp
-    -- below it in this table.
-    condition TEXT,                    -- 'agree' / 'disagree'
+    -- Step 3: RANDOMIZATION — see randomization.py. The condition is drawn
+    -- AFTER the stance is recorded, stratified on that stance (permuted blocks
+    -- of 4), and never depends on free text. WRITE-ONCE: a trigger refuses to
+    -- change it after it is set.
+    condition TEXT,                    -- 'agree' / 'contradict'
     condition_assigned_at TEXT,
+    assignment_scheme TEXT,            -- e.g. 'perm_block4_v1'
+    assignment_stratum TEXT,           -- the stance the draw was stratified on ('yes' / 'no')
+    assignment_block INTEGER,          -- which block of 4 within that stratum
+    assignment_position INTEGER,       -- 1-4, position within that block
 
     -- Step 4: AI verdict
+    verdict_requested_at TEXT,         -- when the browser first asked for the verdict (start of the wait). Write-once.
     ai_verdict_text TEXT,              -- the verdict the participant saw (generated prose, or the stored fallback)
     ai_verdict_generated_at TEXT,
     ai_verdict_word_count INTEGER,     -- whitespace-split word count of ai_verdict_text
@@ -145,6 +155,37 @@ MIGRATIONS = [
     "ALTER TABLE participants ADD COLUMN verdict_fallback_reason TEXT",
     "ALTER TABLE participants ADD COLUMN verdict_fields TEXT",
     "ALTER TABLE participants ADD COLUMN verdict_api_error_count INTEGER",
+    "ALTER TABLE participants ADD COLUMN stance_recorded_at TEXT",
+    "ALTER TABLE participants ADD COLUMN assignment_scheme TEXT",
+    "ALTER TABLE participants ADD COLUMN assignment_stratum TEXT",
+    "ALTER TABLE participants ADD COLUMN assignment_block INTEGER",
+    "ALTER TABLE participants ADD COLUMN assignment_position INTEGER",
+    "ALTER TABLE participants ADD COLUMN verdict_requested_at TEXT",
+]
+
+# The condition label 'disagree' was renamed 'contradict' (the pre-registered
+# wording). Runs after the column migrations and BEFORE the write-once
+# triggers exist, so it can relabel old rows; it is a no-op once none are left.
+RELABEL = "UPDATE participants SET condition = 'contradict' WHERE condition = 'disagree'"
+
+# The pre-generated allocation sequence. One row per slot of a permuted block;
+# a slot is handed to exactly one participant, claimed by a single UPDATE (see
+# claim_slot). `pool` keeps test runs (is_test = 1) from consuming real
+# participants' blocks: the two pools are balanced independently. The table is
+# also the audit trail of the whole sequence that was dealt.
+ALLOCATION_SCHEMAS = [
+    """
+    CREATE TABLE IF NOT EXISTS allocation_slots (
+        pool TEXT NOT NULL,                -- 'real' | 'test'
+        stance TEXT NOT NULL,              -- stratum: 'yes' | 'no'
+        block_no INTEGER NOT NULL,
+        position INTEGER NOT NULL,         -- 1..4
+        condition TEXT NOT NULL,           -- 'agree' | 'contradict'
+        participant_id TEXT UNIQUE,        -- NULL until claimed; one slot per participant, ever
+        claimed_at TEXT,
+        PRIMARY KEY (pool, stance, block_no, position)
+    )
+    """,
 ]
 
 # One row per model call made for a participant -- generations AND API errors --
@@ -213,6 +254,31 @@ TRIGGERS = [
         SELECT RAISE(ABORT, 'is_test is immutable (only legacy NULL -> 1 is allowed)');
     END
     """,
+    # Write-once fields: the stance the draw is stratified on, and the draw itself.
+    """
+    CREATE TRIGGER IF NOT EXISTS participants_condition_write_once
+    BEFORE UPDATE OF condition ON participants
+    WHEN OLD.condition IS NOT NULL AND NEW.condition IS NOT OLD.condition
+    BEGIN
+        SELECT RAISE(ABORT, 'condition is write-once: it was already drawn for this participant');
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS participants_condition_valid
+    BEFORE UPDATE OF condition ON participants
+    WHEN NEW.condition IS NOT NULL AND NEW.condition NOT IN ('agree', 'contradict')
+    BEGIN
+        SELECT RAISE(ABORT, 'condition must be agree or contradict');
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS participants_stance_write_once
+    BEFORE UPDATE OF pre_stance ON participants
+    WHEN OLD.pre_stance IS NOT NULL AND NEW.pre_stance IS NOT OLD.pre_stance
+    BEGIN
+        SELECT RAISE(ABORT, 'pre_stance is write-once');
+    END
+    """,
     """
     CREATE TRIGGER IF NOT EXISTS participants_id_immutable
     BEFORE UPDATE OF id ON participants
@@ -246,6 +312,9 @@ def get_db():
         conn = libsql.connect(TURSO_DATABASE_URL, auth_token=TURSO_AUTH_TOKEN)
     else:
         conn = libsql.connect(DB_PATH)
+        # No PRAGMA busy_timeout on purpose: libsql waits without releasing the
+        # GIL, which stalls the very thread that holds the lock (measured). A
+        # prompt "database is locked" plus retry_on_contention() works instead.
 
     if not _schema_ready:
         conn.execute(SCHEMA)
@@ -255,9 +324,10 @@ def get_db():
             except ValueError as e:
                 if "duplicate column name" not in str(e):
                     raise  # a real failure, not just "already migrated"
+        conn.execute(RELABEL)
         for trigger in TRIGGERS:
             conn.execute(trigger)
-        for statement in VERDICT_ATTEMPTS_SCHEMAS:
+        for statement in VERDICT_ATTEMPTS_SCHEMAS + ALLOCATION_SCHEMAS:
             conn.execute(statement)
         conn.commit()
         _schema_ready = True
@@ -265,6 +335,15 @@ def get_db():
     try:
         yield conn
         conn.commit()
+    except BaseException:
+        # Release the write lock NOW. A failed connection otherwise lingers (the
+        # exception's traceback keeps it alive) still holding its open
+        # transaction, and every other request then sees "database is locked".
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
     finally:
         conn.close()
 
@@ -345,33 +424,144 @@ def save_covariates(participant_id, ai_use_frequency, tech_affinity,
         )
 
 
-def save_pre_stance(participant_id, stance, confidence, rationale, word_count):
+def _is_retryable(exc):
+    """Contention, not a bug: a locked file, a stale read snapshot, or losing a
+    race for the same participant's slot (UNIQUE on participant_id). A fresh
+    attempt on a new connection sees the winner's slot and returns it."""
+    text = str(exc).lower()
+    return any(w in text for w in ("locked", "busy", "snapshot", "unique constraint"))
+
+
+def retry_on_contention(fn):
+    """Re-run a write that failed only because another request was writing at
+    the same moment (locked file / stale snapshot). Every function it wraps is
+    idempotent (write-once WHERE clauses), so re-running cannot double-apply."""
+    def wrapper(*args, **kwargs):
+        deadline = time.monotonic() + 10
+        while True:
+            try:
+                return fn(*args, **kwargs)
+            except Exception as e:
+                if not _is_retryable(e) or time.monotonic() > deadline:
+                    raise
+                time.sleep(0.05)
+    wrapper.__name__, wrapper.__doc__, wrapper.__wrapped__ = fn.__name__, fn.__doc__, fn
+    return wrapper
+
+
+@retry_on_contention
+def record_stance(participant_id, stance, confidence, rationale, word_count, timestamp):
+    """STEP 1 of the randomization order: store the participant's stance.
+
+    Write-once and consent-gated: the UPDATE applies only while pre_stance is
+    still NULL for a row that gave consent, so a repeated or concurrent call
+    cannot overwrite what was first recorded (the trigger forbids it too).
+    Returns True if this call recorded it, False if it was already there (or
+    the participant doesn't exist / didn't consent)."""
     with get_db() as conn:
-        conn.execute(
+        cur = conn.execute(
             """
             UPDATE participants SET
-                pre_stance = ?, pre_confidence = ?, pre_rationale = ?, pre_rationale_word_count = ?
-            WHERE id = ?
+                pre_stance = ?, pre_confidence = ?, pre_rationale = ?,
+                pre_rationale_word_count = ?, stance_recorded_at = ?
+            WHERE id = ? AND consent_given = 1 AND pre_stance IS NULL
             """,
-            (stance, confidence, rationale, word_count, participant_id),
+            (stance, confidence, rationale, word_count, timestamp, participant_id),
         )
+        return cur.rowcount == 1
 
 
-def log_condition(participant_id, condition, timestamp):
-    """Called immediately after the random draw, before the participant's
-    stance/rationale are read. See app.py's /api/submit-stance route."""
+def claim_slot(participant_id, stance, pool):
+    """Hand `participant_id` the next unclaimed slot of `stance`'s stratum.
+
+    Returns (block_no, position, condition). Idempotent: a participant who
+    already holds a slot gets that same slot back, never a second one. The
+    claim is ONE UPDATE statement, so two requests can never take the same
+    slot; a new block of 4 (2 agree + 2 contradict, shuffled) is inserted by
+    ONE multi-row INSERT when the stratum has no free slot left, so a block is
+    never half-written. Retries briefly on contention (see _is_retryable)."""
+    deadline = time.monotonic() + 10
+    while True:
+        try:
+            return _claim_slot_once(participant_id, stance, pool)
+        except Exception as e:  # libsql surfaces SQLite errors as plain exceptions
+            if not _is_retryable(e) or time.monotonic() > deadline:
+                raise
+            time.sleep(0.05)
+
+
+def _claim_slot_once(participant_id, stance, pool):
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
+    with get_db() as conn:
+        def mine():
+            cur = conn.execute(
+                "SELECT block_no, position, condition FROM allocation_slots WHERE participant_id = ?",
+                (participant_id,))
+            rows = cur.fetchall()  # fetchall, not fetchone: an unfinished SELECT keeps a read lock
+            return tuple(rows[0]) if rows else None
+
+        held = mine()
+        if held:
+            return held
+        for _ in range(5):
+            conn.execute(
+                """
+                UPDATE allocation_slots SET participant_id = ?, claimed_at = ?
+                WHERE pool = ? AND stance = ? AND participant_id IS NULL
+                  AND rowid = (SELECT MIN(rowid) FROM allocation_slots
+                               WHERE pool = ? AND stance = ? AND participant_id IS NULL)
+                """,
+                (participant_id, stamp, pool, stance, pool, stance))
+            held = mine()
+            if held:
+                return held
+            # No free slot in this stratum: deal a new block. INSERT OR IGNORE
+            # on the primary key makes a racing second writer a harmless no-op.
+            cur = conn.execute(
+                "SELECT COALESCE(MAX(block_no), 0) + 1 FROM allocation_slots WHERE pool = ? AND stance = ?",
+                (pool, stance))
+            block_no = cur.fetchall()[0][0]
+            block = randomization.new_block()
+            conn.execute(
+                "INSERT OR IGNORE INTO allocation_slots (pool, stance, block_no, position, condition) VALUES "
+                + ", ".join(["(?, ?, ?, ?, ?)"] * len(block)),
+                [v for pos, c in enumerate(block, 1) for v in (pool, stance, block_no, pos, c)])
+        raise RuntimeError("could not claim an allocation slot")
+
+
+@retry_on_contention
+def log_condition(participant_id, draw, timestamp):
+    """STEP 2 (after record_stance): store the drawn condition and how it was
+    drawn. Write-once: applies only while condition is NULL, and only if the
+    stratum used is the stance on record. Returns True if stored."""
+    with get_db() as conn:
+        cur = conn.execute(
+            """
+            UPDATE participants SET
+                condition = ?, condition_assigned_at = ?, assignment_scheme = ?,
+                assignment_stratum = ?, assignment_block = ?, assignment_position = ?
+            WHERE id = ? AND condition IS NULL AND pre_stance = ?
+            """,
+            (draw["condition"], timestamp, draw["scheme"], draw["stratum"],
+             draw["block"], draw["position"], participant_id, draw["stratum"]),
+        )
+        return cur.rowcount == 1
+
+
+@retry_on_contention
+def mark_verdict_requested(participant_id, timestamp):
+    """Start of the wait for the verdict (write-once); used for active time."""
     with get_db() as conn:
         conn.execute(
-            "UPDATE participants SET condition = ?, condition_assigned_at = ? WHERE id = ?",
-            (condition, timestamp, participant_id),
-        )
+            "UPDATE participants SET verdict_requested_at = ? WHERE id = ? AND verdict_requested_at IS NULL",
+            (timestamp, participant_id))
 
 
 def get_participant(participant_id):
     with get_db() as conn:
         cur = conn.execute("SELECT * FROM participants WHERE id = ?", (participant_id,))
-        row = cur.fetchone()
-        return _row_to_dict(cur, row) if row else None
+        rows = cur.fetchall()  # fetchall, not fetchone: an unfinished SELECT keeps a read lock
+        return _row_to_dict(cur, rows[0]) if rows else None
 
 
 def log_verdict_attempt(participant_id, rec, created_at):
@@ -390,6 +580,7 @@ def log_verdict_attempt(participant_id, rec, created_at):
         )
 
 
+@retry_on_contention
 def save_verdict_result(participant_id, *, text, word_count, target, attempts, fallback_used,
                         fallback_reason, fields_json, api_error_count, generated_at):
     """Store the final verdict. First writer wins: the UPDATE only applies while
@@ -462,37 +653,3 @@ def all_participants(include_test=False):
     with get_db() as conn:
         cur = conn.execute(f"SELECT * FROM participants {where} ORDER BY created_at")
         return [_row_to_dict(cur, row) for row in cur.fetchall()]
-
-
-def delete_participants_except(recruitment_source_to_keep):
-    """One-off cleanup helper for clearing out test/pilot data before real
-    collection starts — deletes every row whose recruitment_source doesn't
-    exactly match the given value. Used via the temporary /admin/cleanup
-    route in app.py; both should be removed once that specific cleanup is
-    done, not kept as a standing bulk-delete capability."""
-    with get_db() as conn:
-        cur = conn.execute(
-            "DELETE FROM participants WHERE recruitment_source IS NULL OR recruitment_source != ?",
-            (recruitment_source_to_keep,),
-        )
-        return cur.rowcount
-
-
-def delete_incomplete_participants(recruitment_source):
-    """One-off cleanup helper, paired with delete_participants_except above
-    and used the same way via /admin/cleanup: within the pilot rows being
-    kept, deletes any row that never got a verdict (ai_verdict_text IS
-    NULL) — a client-side timeout, a 429/503 mid-run, or an abandoned
-    session that never reached /api/generate-verdict. Confirmed live
-    (2026-09-07) that a slow Gemini response can still complete
-    server-side after the pilot script's client gave up and moved on, so
-    NULL here reliably means "no verdict was ever generated for this
-    participant", not "one might still be in flight". A row with a
-    verdict but no post-verdict/debrief data is still kept — it's still a
-    real audit sample for the AI prompt, just an incomplete survey."""
-    with get_db() as conn:
-        cur = conn.execute(
-            "DELETE FROM participants WHERE recruitment_source = ? AND ai_verdict_text IS NULL",
-            (recruitment_source,),
-        )
-        return cur.rowcount

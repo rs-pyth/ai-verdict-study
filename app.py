@@ -24,7 +24,8 @@ from openai import OpenAI
 import db
 import config
 import verdicts
-from randomization import assign_condition
+import analysis
+import randomization
 
 app = Flask(__name__)
 
@@ -232,40 +233,62 @@ def api_covariates():
     return jsonify({"ok": True})
 
 
-# --- Step 2 + 3: stance submission and RANDOMIZATION --------------------
+# --- Step 2 + 3: stance submission, THEN randomization --------------------
 #
 # This is the causal backbone of the study. Read randomization.py first.
 #
-# Ordering matters and is deliberate: the participant_id is just an
-# identifier (not participant-authored content), so reading it is fine.
-# But the random draw and its write to storage happen BEFORE the request
-# body's stance/rationale content is parsed and stored — so nothing about
-# what the participant wrote can influence, or even be involved in, the
-# assignment.
+# Order, enforced here and logged on the row (stance_recorded_at <=
+# condition_assigned_at):
+#   1. validate the request and RECORD the stance (write-once);
+#   2. draw the condition, STRATIFIED ON THE RECORDED STANCE (permuted blocks
+#      of 4 per stance) -- the draw sees only the validated 'yes'/'no' read
+#      back from storage, never the rationale or anything else free-form;
+#   3. the verdict is served by a separate request, afterwards.
+# Every step is idempotent: a double-click, retry or second tab gets the same
+# answer and can never cause a second draw (see test_double_submit.py).
+
+CONFIDENCE_RANGE = (1, 7)
+MAX_RATIONALE_CHARS = 10000
+
 
 @app.route("/api/submit-stance", methods=["POST"])
 def api_submit_stance():
     participant_id = request.headers.get("X-Participant-Id")
     if not participant_id:
-        # Without this, a missing/stripped header would silently no-op
-        # both the condition write and the stance write below (UPDATE
-        # ... WHERE id = NULL matches zero rows but raises nothing), and
-        # the participant would only find out one step later, when
-        # generate-verdict's "no condition assigned" check finally
-        # catches it.
         return jsonify({"error": "missing participant id"}), 400
+    participant = db.get_participant(participant_id)
+    if participant is None or not participant["consent_given"]:
+        return jsonify({"error": "unknown participant or no consent recorded"}), 404
 
-    # --- RANDOMIZATION: happens first, touches nothing else yet ---
-    condition = assign_condition()
-    db.log_condition(participant_id, condition, now())
-    # --- end randomization ---
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "expected a JSON object"}), 400
+    try:
+        stance = randomization.validate_stance(data.get("stance"))
+    except ValueError:
+        return jsonify({"error": "stance must be 'yes' or 'no'"}), 400
+    confidence, rationale = data.get("confidence"), data.get("rationale")
+    if type(confidence) is not int or not CONFIDENCE_RANGE[0] <= confidence <= CONFIDENCE_RANGE[1]:
+        return jsonify({"error": f"confidence must be an integer {CONFIDENCE_RANGE[0]}-{CONFIDENCE_RANGE[1]}"}), 400
+    if not isinstance(rationale, str) or not rationale.strip() or len(rationale) > MAX_RATIONALE_CHARS:
+        return jsonify({"error": "rationale must be non-empty text"}), 400
 
-    data = request.get_json()  # only now do we read the participant's answer
-    stance = data["stance"]
-    confidence = data["confidence"]
-    rationale = data["rationale"]
-    word_count = len(rationale.split())
-    db.save_pre_stance(participant_id, stance, confidence, rationale, word_count)
+    # --- 1. record the stance (first writer wins) ---
+    recorded = db.record_stance(participant_id, stance, confidence, rationale,
+                                len(rationale.split()), now())
+    participant = db.get_participant(participant_id)
+    if not recorded and participant["pre_stance"] != stance:
+        # A second submission that disagrees with the first: keep the first.
+        return jsonify({"error": "a different stance was already recorded"}), 409
+
+    # --- 2. draw the condition, only if none exists yet ---
+    if participant["condition"] is None:
+        pool = "real" if participant["is_test"] == 0 else "test"  # test and legacy rows never touch real blocks
+        draw = randomization.draw_condition(
+            participant["pre_stance"],  # the recorded, validated stance -- nothing else enters the draw
+            lambda s: db.claim_slot(participant_id, s, pool),
+        )
+        db.log_condition(participant_id, draw, now())
 
     return jsonify({"ok": True})
 
@@ -286,11 +309,11 @@ def scenario_facts_for_condition(condition, pre_stance):
     participant's own pre-stance is used ONLY to implement that
     already-assigned condition:
       'agree'    -> the set that supports their stance
-      'disagree' -> the set that opposes it
+      'contradict' -> the set that opposes it
     "yes" is backed by the growth-case facts and "no" by the risk-case
     facts. See the comment above SCENARIO_FACTS_GROWTH in config.py for
     why the stance is part of the mapping."""
-    if condition not in ("agree", "disagree"):
+    if condition not in ("agree", "contradict"):
         raise ValueError(f"unexpected condition: {condition!r}")
     if pre_stance not in ("yes", "no"):
         raise ValueError(f"unexpected pre_stance: {pre_stance!r}")
@@ -386,6 +409,10 @@ def api_generate_verdict():
     if participant["ai_verdict_text"]:
         return jsonify({"verdict": participant["ai_verdict_text"]})
 
+    # Start of the wait, for the active-time measure (write-once, so a retry
+    # after a failure doesn't move it).
+    db.mark_verdict_requested(participant_id, now())
+
     if ai_client is None:
         # A deployment fault, not a participant-level failure: fail loudly
         # rather than quietly serving every participant the fallback.
@@ -460,52 +487,32 @@ def api_debrief_feedback():
 
 @app.route("/admin/export")
 def admin_export():
+    """The analysis CSV: one row per participant (analysis.py defines and
+    documents every column). Real participants only by default;
+    ?include_test=1 adds test rows and legacy (unflagged) rows, told apart by
+    the is_test column. ?format=raw gives the full database table instead
+    (every stored column, including free text) for auditing."""
     supplied = request.args.get("password", "")
     if not ADMIN_EXPORT_PASSWORD or not secrets.compare_digest(supplied, ADMIN_EXPORT_PASSWORD):
         return "Unauthorized", 401
 
-    # Real participants only by default; ?include_test=1 adds test rows and
-    # legacy (unflagged) rows, each identifiable from the is_test column.
     rows = db.all_participants(include_test=request.args.get("include_test") == "1")
-    columns = db.column_names()
+    if request.args.get("format") == "raw":
+        columns, out_rows, filename = db.column_names(), rows, "study_raw_export.csv"
+    else:
+        columns, out_rows, filename = analysis.COLUMNS, [analysis.analysis_row(r) for r in rows], "study_analysis.csv"
 
     buffer = io.StringIO()
     writer = csv.DictWriter(buffer, fieldnames=columns)
     writer.writeheader()
-    for row in rows:
+    for row in out_rows:
         writer.writerow({col: row[col] for col in columns})
 
     return Response(
         buffer.getvalue(),
         mimetype="text/csv",
-        headers={"Content-Disposition": "attachment; filename=study_export.csv"},
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
-
-
-# --- TEMPORARY: one-off pilot-data cleanup ---------------------------------
-# Two-step cleanup down to just the legit pilot-audit-batch-3 data:
-# 1) deletes every row from any other/no recruitment_source (earlier
-#    test/pilot batches, individual verification rows), then
-# 2) within what's left, deletes rows that never got a verdict (a
-#    client-side timeout, a 429/503 mid-run, an abandoned session) --
-#    the "null responses", not real audit samples.
-# Remove this route (and delete_participants_except() /
-# delete_incomplete_participants() in db.py) once you've run it once —
-# scoped to this specific cleanup, not a standing bulk-delete capability
-# meant to be left in a live app.
-@app.route("/admin/cleanup", methods=["POST"])
-def admin_cleanup():
-    supplied = request.args.get("password", "")
-    if not ADMIN_EXPORT_PASSWORD or not secrets.compare_digest(supplied, ADMIN_EXPORT_PASSWORD):
-        return "Unauthorized", 401
-
-    deleted_other_batches = db.delete_participants_except("pilot-audit-batch-3")
-    deleted_incomplete = db.delete_incomplete_participants("pilot-audit-batch-3")
-    return jsonify({
-        "deleted_other_batches": deleted_other_batches,
-        "deleted_incomplete_pilot_rows": deleted_incomplete,
-        "total_deleted": deleted_other_batches + deleted_incomplete,
-    })
 
 
 if __name__ == "__main__":

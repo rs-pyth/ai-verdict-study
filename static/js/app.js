@@ -75,11 +75,11 @@ async function postJSON(url, body, extraHeaders) {
 
 // Wraps a button's click handler so a double-click (or an impatient
 // re-click while a request is in flight) can't fire the handler twice.
-// Without this, e.g. Step 2's continue button could fire two concurrent
-// /api/submit-stance calls, each independently re-drawing
-// assign_condition() and silently overwriting the other's condition, and
-// two /api/generate-verdict calls, burning two of the 20/day Gemini quota
-// for one participant. Any error not already handled inside `handler`
+// A convenience, not the safeguard: the server is what guarantees one draw
+// per participant (/api/submit-stance is idempotent and write-once; see
+// test_double_submit.py), and /api/generate-verdict never regenerates a stored
+// verdict. This just avoids sending the duplicate requests, and the second
+// /api/generate-verdict call that would waste Gemini quota. Any error not already handled inside `handler`
 // surfaces via alert() rather than becoming a silent unhandled rejection.
 function guardedHandler(buttonId, handler) {
   const button = document.getElementById(buttonId);
@@ -185,11 +185,9 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   // Separated from the continue handler so the retry button below can
-  // re-run just this call. Retrying must NOT re-run /api/submit-stance —
-  // the condition was already drawn and stored server-side the first
-  // time, and re-randomizing it on every failed attempt would undermine
-  // the whole point of drawing it once, before anything participant-
-  // authored is even read (see randomization.py).
+  // re-run just this call. Retrying does not re-run /api/submit-stance --
+  // the stance is recorded and the condition drawn exactly once, server
+  // side (see randomization.py).
   async function requestVerdict() {
     const loadingError = document.getElementById("loading-error");
     const retryButton = document.getElementById("loading-retry");
@@ -238,10 +236,9 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
 
-    // Randomization happens server-side in /api/submit-stance — see
-    // randomization.py and app.py for the guarantee. This call sends
-    // the participant's answer; the server draws the condition BEFORE
-    // it even reads that answer out of the request body.
+    // Randomization happens server-side in /api/submit-stance -- see
+    // randomization.py. The server records the stance first, THEN draws the
+    // condition stratified on that stance; the rationale never enters the draw.
     await postJSON(
       "/api/submit-stance",
       { stance, confidence: parseInt(confidence, 10), rationale },
