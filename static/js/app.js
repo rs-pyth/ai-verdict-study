@@ -6,7 +6,15 @@
 const PARTICIPANT_ID_KEY = "aivs_participant_id";
 const COMPLETED_KEY = "aivs_completed";
 
+// Set by the server only when the page was opened with a valid ?test= token.
+const TEST_MODE = window.STUDY_META.testMode === true;
+
 function getParticipantId() {
+  // Test runs use a fresh "test-" id every page load and never touch
+  // localStorage, so they can't reuse, overwrite or block a real
+  // participant's id/completion flag in the same browser. The "test-"
+  // prefix is what the server and the database tie the is_test flag to.
+  if (TEST_MODE) return "test-" + crypto.randomUUID();
   let id = localStorage.getItem(PARTICIPANT_ID_KEY);
   if (!id) {
     id = crypto.randomUUID();
@@ -94,7 +102,7 @@ function guardedHandler(buttonId, handler) {
 const participantId = getParticipantId();
 
 document.addEventListener("DOMContentLoaded", () => {
-  if (localStorage.getItem(COMPLETED_KEY) === "true") {
+  if (!TEST_MODE && localStorage.getItem(COMPLETED_KEY) === "true") {
     showStep("already-participated");
     return;
   }
@@ -109,6 +117,7 @@ document.addEventListener("DOMContentLoaded", () => {
     await postJSON("/api/consent", {
       participant_id: participantId,
       recruitment_source: window.STUDY_META.recruitmentSource,
+      ...(TEST_MODE ? { test_token: window.STUDY_META.testToken } : {}),
     });
     showStep("step-1");
   });
@@ -316,7 +325,7 @@ document.addEventListener("DOMContentLoaded", () => {
       participant_id: participantId,
       feedback,
     });
-    localStorage.setItem(COMPLETED_KEY, "true");
+    if (!TEST_MODE) localStorage.setItem(COMPLETED_KEY, "true");
     showStep("step-done");
   });
 });

@@ -22,6 +22,10 @@
 </fieldset>
 {% endmacro %}
 
+{% if test_mode %}
+<div class="test-banner">TEST RUN &mdash; this session is flagged as test data and is excluded from the real export.</div>
+{% endif %}
+
 <div id="app">
 
   <!-- Blocked screen: shown by JS if this browser already completed the study -->
@@ -244,6 +248,8 @@
 
 <script>
   window.STUDY_META = {
+    testMode: {{ test_mode | tojson }},
+    testToken: {{ test_token | tojson }},
     recruitmentSource: {{ recruitment_source | tojson }},
     minimumAge: {{ minimum_age | tojson }},
     financialLiteracyAnswers: {{ fin_lit_questions | map(attribute='correct_index') | list | tojson }},

@@ -8,6 +8,7 @@ where explicitly noted.
 import csv
 import io
 import os
+import re
 import secrets
 from datetime import datetime, timezone
 
@@ -29,6 +30,55 @@ app = Flask(__name__)
 # get_db() in db.py for why. Schema creation happens lazily on first use.
 
 ADMIN_EXPORT_PASSWORD = os.environ.get("ADMIN_EXPORT_PASSWORD")
+
+# --- test mode ---------------------------------------------------------------
+# A test/soak run is only possible when BOTH hold: the caller presents
+# TEST_MODE_TOKEN (an env var you set on the host; unset = test mode is
+# disabled entirely) AND its participant id starts with "test-" (an id
+# namespace real browsers never produce -- they generate bare UUIDs). The
+# resulting is_test flag is written once at consent and is immutable at the
+# database level (db.py TRIGGERS). Every mismatch is refused outright rather
+# than quietly falling back to "real", so a tester who forgets the token, or
+# mistypes it, gets an error instead of polluting the real data.
+TEST_MODE_TOKEN = os.environ.get("TEST_MODE_TOKEN")
+TEST_ID_PREFIX = "test-"
+# What a real browser generates (crypto.randomUUID() is always a v4 UUID).
+# Requiring real ids to look like this means an ad hoc script that forgets to
+# use test mode (ids like "pilot6-...") is refused instead of being stored as
+# real data. It can't stop someone deliberately forging a UUID; it stops the
+# accident.
+REAL_ID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+)
+
+
+def is_valid_test_token(supplied):
+    return (
+        bool(TEST_MODE_TOKEN)
+        and isinstance(supplied, str)
+        and secrets.compare_digest(supplied.encode(), TEST_MODE_TOKEN.encode())
+    )
+
+
+def classify_run(participant_id, supplied_token):
+    """Returns (is_test, error). is_test is 1 or 0 when error is None."""
+    if not isinstance(participant_id, str) or not participant_id:
+        return None, "invalid participant id"
+    has_prefix = participant_id.startswith(TEST_ID_PREFIX)
+    if supplied_token is None:
+        if has_prefix:
+            return None, "participant ids starting with 'test-' require a valid test token"
+        if not REAL_ID_RE.match(participant_id):
+            return None, (
+                "real participant ids must be UUIDs; scripted or test runs "
+                "must use test mode (a 'test-' id plus the test token)"
+            )
+        return 0, None
+    if not is_valid_test_token(supplied_token):
+        return None, "invalid test token"
+    if not has_prefix:
+        return None, "a test token requires a participant id starting with 'test-'"
+    return 1, None
 
 # Switched from OpenRouter to Gemini's free tier — OpenRouter has no
 # durable free tier (a negative account balance blocked every request
@@ -100,8 +150,26 @@ def now():
 @app.route("/")
 def index():
     src = request.args.get("src", "")
+
+    # ?test=<token> opens a flagged test session. If the parameter is present
+    # but the token is wrong (or test mode isn't configured), refuse -- do NOT
+    # fall through to the normal page, which would record the session as
+    # real participant data while the tester believes it's a test.
+    test_arg = request.args.get("test")
+    test_mode = test_arg is not None
+    if test_mode and not is_valid_test_token(test_arg):
+        return Response(
+            "Refused: invalid or unconfigured test token. Opening the study "
+            "without it would record this session as REAL participant data, "
+            "so the page was not served.",
+            status=403,
+            mimetype="text/plain",
+        )
+
     return render_template(
         "index.html",
+        test_mode=test_mode,
+        test_token=test_arg if test_mode else None,
         recruitment_source=src,
         consent_text=config.CONSENT_TEXT,
         consent_checkbox_label=config.CONSENT_CHECKBOX_LABEL,
@@ -132,8 +200,12 @@ def api_consent():
     data = request.get_json()
     participant_id = data["participant_id"]
     recruitment_source = data.get("recruitment_source", "")
-    db.save_consent(participant_id, recruitment_source, now())
-    return jsonify({"ok": True})
+    is_test, error = classify_run(participant_id, data.get("test_token"))
+    if error:
+        return jsonify({"error": error}), 400
+    db.save_consent(participant_id, recruitment_source, now(), is_test)
+    # Echoed so scripted clients can assert the flag they got is the one they meant.
+    return jsonify({"ok": True, "is_test": bool(is_test)})
 
 
 # --- Step 1: covariates ------------------------------------------------
@@ -387,7 +459,9 @@ def admin_export():
     if not ADMIN_EXPORT_PASSWORD or not secrets.compare_digest(supplied, ADMIN_EXPORT_PASSWORD):
         return "Unauthorized", 401
 
-    rows = db.all_participants()
+    # Real participants only by default; ?include_test=1 adds test rows and
+    # legacy (unflagged) rows, each identifiable from the is_test column.
+    rows = db.all_participants(include_test=request.args.get("include_test") == "1")
     columns = db.column_names()
 
     buffer = io.StringIO()

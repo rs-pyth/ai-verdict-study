@@ -102,7 +102,32 @@ http://localhost:5050/admin/export?password=YOUR_ADMIN_EXPORT_PASSWORD
 ```
 
 Downloads everything as CSV, one row per participant, columns matching the
-`participants` table in `db.py`.
+`participants` table in `db.py`. **Real participants only** by default:
+add `&include_test=1` to also get test rows and legacy (pre-flag) rows,
+told apart by the `is_test` column.
+
+## Test runs (the `is_test` flag)
+
+Every row carries `is_test`: `1` = test/soak run, `0` = real participant,
+`NULL` = legacy row from before the flag existed (never counts as real).
+It is set once, at consent, and is **immutable**: database triggers
+(`TRIGGERS` in `db.py`) refuse any change to it or to the participant id,
+and refuse an insert whose flag disagrees with the id namespace. It is not
+derived from `recruitment_source` (a URL parameter anyone can set) and
+nothing is filtered at analysis time.
+
+- A test run needs **both** `TEST_MODE_TOKEN` (an env var you set on the
+  host; unset = test mode is disabled entirely) **and** a participant id
+  starting `test-` (real browsers only ever generate bare UUIDs).
+- In a browser, open `/?test=<token>`: a red TEST RUN banner shows, the id
+  is a fresh `test-...` every load, and `localStorage` is never touched.
+  A wrong or empty `?test=` is refused with a 403 rather than falling
+  through to a normal (real) session.
+- From a script, send `test_token` and a `test-` id to `/api/consent`; the
+  response echoes `is_test`, so assert it is `true`.
+- Every inconsistent combination (test id without token, token without test
+  id, wrong token) is refused with a 400 and creates no row.
+- Run `python test_test_flag.py` after touching any of this.
 
 ## Storage: why Turso, not just a local file
 

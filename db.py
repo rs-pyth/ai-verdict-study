@@ -41,6 +41,9 @@ CREATE TABLE IF NOT EXISTS participants (
     id TEXT PRIMARY KEY,               -- random UUID, generated client-side at consent
     created_at TEXT NOT NULL,          -- when the row was first created (consent time)
     recruitment_source TEXT,           -- from ?src= URL param, e.g. 'northstar', 'classmates', 'prolific'
+    is_test INTEGER,                   -- 1 = test/soak run, 0 = real participant, NULL = legacy row from before
+                                        -- this flag existed (never counts as real). Set once at consent and
+                                        -- IMMUTABLE -- enforced by the TRIGGERS below, not by convention.
 
     -- Step 0: consent
     consent_given INTEGER NOT NULL DEFAULT 0,
@@ -122,6 +125,52 @@ CREATE TABLE IF NOT EXISTS participants (
 MIGRATIONS = [
     "ALTER TABLE participants ADD COLUMN attention_check_response INTEGER",
     "ALTER TABLE participants ADD COLUMN gender TEXT",
+    # Deliberately nullable with NO default: every row that exists when this
+    # migration runs gets NULL ("legacy, unclassified"), which is neither
+    # real nor test. A default of 0 would have silently relabeled all the
+    # pre-existing synthetic pilot rows as REAL data.
+    "ALTER TABLE participants ADD COLUMN is_test INTEGER",
+]
+
+# Database-level guarantees for is_test. Installed after the migrations
+# (they reference the column), each a single CREATE TRIGGER statement and
+# idempotent. "Immutable" means the database refuses the write, whoever
+# or whatever (a script, a console, a bug) attempts it:
+#   1. A new row must carry is_test 0 or 1, and the flag must agree with the
+#      id namespace: test rows have ids starting 'test-', real rows never do.
+#      So a row can't be both a test run and look like a real participant.
+#   2. Once set, is_test can't change. The single permitted write is
+#      classifying a legacy NULL row as a test row (NULL -> 1): legacy rows
+#      can be flagged after the fact but can never be promoted to "real".
+#   3. The id can't change (it would defeat rule 1).
+# Deleting rows is not restricted.
+TRIGGERS = [
+    """
+    CREATE TRIGGER IF NOT EXISTS participants_is_test_on_insert
+    BEFORE INSERT ON participants
+    WHEN NEW.is_test IS NULL
+      OR NEW.is_test NOT IN (0, 1)
+      OR (NEW.is_test = 1) != (substr(NEW.id, 1, 5) = 'test-')
+    BEGIN
+        SELECT RAISE(ABORT, 'is_test must be 0 or 1 and agree with the test- id prefix');
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS participants_is_test_immutable
+    BEFORE UPDATE OF is_test ON participants
+    WHEN NOT (OLD.is_test IS NULL AND NEW.is_test = 1)
+    BEGIN
+        SELECT RAISE(ABORT, 'is_test is immutable (only legacy NULL -> 1 is allowed)');
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS participants_id_immutable
+    BEFORE UPDATE OF id ON participants
+    WHEN NEW.id IS NOT OLD.id
+    BEGIN
+        SELECT RAISE(ABORT, 'participant id is immutable');
+    END
+    """,
 ]
 
 
@@ -156,6 +205,8 @@ def get_db():
             except ValueError as e:
                 if "duplicate column name" not in str(e):
                     raise  # a real failure, not just "already migrated"
+        for trigger in TRIGGERS:
+            conn.execute(trigger)
         conn.commit()
         _schema_ready = True
 
@@ -194,18 +245,22 @@ def column_names():
 # a little more typing here, but no risk of a column name coming from
 # unvalidated user input and no need to cross-reference a whitelist.
 
-def save_consent(participant_id, recruitment_source, timestamp):
+def save_consent(participant_id, recruitment_source, timestamp, is_test):
+    """is_test (0 or 1) is written only on first insert. The ON CONFLICT
+    branch deliberately never touches it, and the triggers would refuse
+    if it tried: a participant who re-submits consent keeps whatever flag
+    the row was created with."""
     with get_db() as conn:
         conn.execute(
             """
             INSERT INTO participants (id, created_at, recruitment_source,
-                                       consent_given, consent_timestamp)
-            VALUES (?, ?, ?, 1, ?)
+                                       consent_given, consent_timestamp, is_test)
+            VALUES (?, ?, ?, 1, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 consent_given = 1,
                 consent_timestamp = excluded.consent_timestamp
             """,
-            (participant_id, timestamp, recruitment_source, timestamp),
+            (participant_id, timestamp, recruitment_source, timestamp, is_test),
         )
 
 
@@ -318,9 +373,13 @@ def save_debrief_feedback(participant_id, feedback_text, timestamp):
         )
 
 
-def all_participants():
+def all_participants(include_test=False):
+    """Real participants only (is_test = 0) unless include_test is set.
+    Legacy NULL rows and test rows both count as "not real", so they can
+    never reach an export by accident."""
+    where = "" if include_test else "WHERE is_test = 0"
     with get_db() as conn:
-        cur = conn.execute("SELECT * FROM participants ORDER BY created_at")
+        cur = conn.execute(f"SELECT * FROM participants {where} ORDER BY created_at")
         return [_row_to_dict(cur, row) for row in cur.fetchall()]
 
 
