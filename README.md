@@ -47,8 +47,8 @@ four stored fallbacks are only a safety net. Condition labels `agree` /
 temperature 0; at most 3 generations (API errors don't count); 90 s budget;
 80-100 word target (actual count recorded); agree -> `supported`, contradict ->
 `not_supported`; completion time = active time (excludes the AI wait). Jian
-item 2 stays reworded and is disclosed as a deviation. Not yet specified: the
-speeder-exclusion floor (left unspecified on purpose; see below).
+item 2 stays reworded and is disclosed as a deviation. Also confirmed: the
+speeder-exclusion floor: 120 s of active time (see below).
 
 ## Analysis reference: DV → hypothesis mapping
 
@@ -79,11 +79,15 @@ Applied identically across both conditions:
   enforced live — a wrong answer is still recorded and the participant
   proceeds normally; the exclusion happens at analysis time, from the
   CSV export.
-- **Completion-time floor.** Use `completion_time_s` in the export (active
-  time: consent to debrief minus the wait for the AI verdict, so a slow API
-  call doesn't change who is excluded). **The cutoff is deliberately left
-  unspecified**: set it, and write it into the pre-registration, before
-  looking at any real data.
+- **Completion-time floor: 120 seconds** (`config.SPEEDER_FLOOR_S`, confirmed
+  by the researcher 2026-10-28). Exclude any participant whose
+  `completion_time_s` in the export is **below 120**. That column is active time:
+  consent to debrief minus the wait for the AI verdict, so a slow API call
+  doesn't change who is excluded (and it is a stricter test than total time).
+  Not enforced live, and applied identically across both conditions. A row
+  whose time can't be computed (a missing timestamp) is left blank in the
+  export, not excluded automatically: decide how to treat those before looking
+  at results.
 
 ## Run locally
 

@@ -45,6 +45,13 @@ CONSENT_CHECKBOX_LABEL = (
 # label, update this to match.
 MINIMUM_AGE = 13
 
+# Speeder exclusion (applied at analysis time, identically across conditions):
+# drop any participant whose completion_time_s in the analysis export is BELOW
+# this many seconds. completion_time_s is ACTIVE time (consent to debrief minus
+# the wait for the AI verdict; see analysis.timing). Researcher decision
+# 2026-10-28: 120 s, written into the pre-registration. Not enforced live.
+SPEEDER_FLOOR_S = 120
+
 # --- Step 2: the fixed investment scenario -----------------------------
 SCENARIO_TEXT = """TechFlow Inc. is a mid-sized software company. Over the past year, its stock price has risen 40%, driven mainly by strong revenue growth. A closer look shows that TechFlow's revenue growth has come almost entirely from one large government contract signed 8 months ago, which accounts for 35% of total revenue this year. The company's core subscription business (its original product line) has grown only 3% over the same period — well below the industry average of 12%. TechFlow's CEO recently stated in an earnings call that the company is "exploring additional government partnerships to build on this momentum."
 
